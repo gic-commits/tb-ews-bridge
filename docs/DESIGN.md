@@ -37,8 +37,10 @@
 
 ### 3.1 为什么是"服务端"而不是"客户端"
 
-TB 只会**作为 CalDAV 客户端**拉/推日历，不会说 EWS；因此本地必须扮演一个
-最小 CalDAV 服务器，把 TB 的标准 WebDAV/CalDAV 报文翻译成 EWS。
+Thunderbird 的原生 EWS 支持**只覆盖邮箱**，日历侧没有 EWS provider——它只会
+**作为 CalDAV 客户端**拉/推日历。因此本地必须扮演一个最小 CalDAV 服务器，把 TB
+的标准 WebDAV/CalDAV 报文翻译成 EWS。（邮箱侧则相反：TB 直接说 EWS，经本机桥做
+NTLM 与兼容重写即可。）
 
 ### 3.2 读路径
 
