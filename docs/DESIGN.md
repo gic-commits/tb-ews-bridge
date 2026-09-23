@@ -86,7 +86,8 @@ Exchange 2010 不返回日历事件的 iCalendar UID。策略：
 
 **已知问题**：用户在 TB 中"接受"会议邀请时，TB 用邀请内嵌 VCALENDAR 的原始
 UID 建本地事件，与桥生成的 UUID 不同 → **同一会议显示两次**。根治方案
-（M-UID）：从邀请邮件解析原始 UID 并映射。
+（M-UID）：读取会议的 `PidLidGlobalObjectId` 扩展属性作为 UID（已验证可读，
+且其十六进制与邀请 UID 一致）。
 
 ### 3.5 `FindItem` 的能力边界
 
@@ -203,7 +204,10 @@ calendar-event-dialog.xhtml` 中仅有 `cmd_attach_url`，以及被禁用的
 
 ## 8. 路线图
 
-- **M-UID 对齐**：邀请邮件 MIME/VCALENDAR 解析原始 UID → 映射表
-  `uid ↔ itemid`，桥侧 ICS 输出原始 UID，消灭"接受邀请"重复。
-- **文件附件**：待 TB 事件对话框支持本地文件后，接通桥端 base64 路径。
-- **CardDAV**：待个人 Contacts 文件夹有数据后再评估。
+- **M-UID 对齐**（无外部前置）：读取每个日历项的扩展属性
+  `DistinguishedPropertySetId=Meeting, PropertyId=3, PropertyType=Binary`
+  （`PidLidGlobalObjectId`，base64）→ 十六进制即 iCalendar UID → 作为 CalDAV UID
+  （替代随机 UUID），使 TB 依邀请 UID 建的事件与 EWS 会议自动归并；需迁移本地
+  `uid↔itemid` 映射。实测该属性可读且与 TB 侧 UID 完全一致。
+- **文件附件**（等待上游）：待 TB 事件对话框支持本地文件后，接通桥端 base64 路径。
+- **CardDAV**（等待数据/接口）：待个人 Contacts 文件夹有数据、且出现可枚举接口后评估。

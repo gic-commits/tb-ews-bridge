@@ -150,10 +150,12 @@ systemctl --user enable --now check-ews-url.timer           # run every 10 min
   added in TB; the bridge's file-attachment (base64) code is kept but not
   triggered by TB. It will work once upstream completes the UI.
 - **Duplicate events from accepted invitations**: Exchange 2010 calendar items
-  carry no iCalendar UID, so the bridge generates a UUID; when the user
-  *accepts* an invitation from mail, TB creates a local event with the
-  invitation's original UID → possible duplicates. Fixing this needs "original
-  UID alignment" (see Roadmap).
+  do not expose an iCalendar UID via the standard fields, so the bridge assigns
+  each event a random UUID; when the user *accepts* an invitation from mail, TB
+  creates a local event with the invitation's original UID → the same meeting
+  appears twice. **Not fixed yet**; a viable fix is to read the meeting's
+  `PidLidGlobalObjectId` extended property as the UID (verified readable and
+  matching the invitation UID). See the Roadmap.
 - **Server is Exchange 2010**: EWS SOAP only, relies on `curl --ntlm`, no
   modern authentication.
 - **Single account, loopback only**: all three services bind `127.0.0.1`.
@@ -181,14 +183,58 @@ systemctl --user enable --now check-ews-url.timer           # run every 10 min
 
 ## 7. Roadmap
 
-- [x] M0 Mail bridge (NTLM relay + request rewrite + operation logging)
-- [x] M1 Read-only calendar (CalDAV discovery/query/multiget)
-- [x] M2 Calendar write-back (PUT/DELETE → EWS Create/Update/Delete)
-- [x] M3 Meeting invitations (attendees → invite/update/cancel)
-- [x] M4 Read-only GAL (LDAP → ResolveNames)
-- [x] M5 Timezone fix, URI attachments, calendar read/write privileges
-- [ ] M-UID alignment: remove calendar duplicates from accepted invitations
-- [ ] (upstream) local-file attachments in the TB event dialog
+### Done
+
+- **M0 Mail bridge**: Thunderbird's native EWS requests are relayed by the local
+  bridge, which performs the NTLM handshake and rewrites request bodies
+  (`archive`→`inbox`, drops `InternetMessageId`) to satisfy EWS 2010, with
+  per-operation logging.
+- **M1 Read-only calendar**: CalDAV discovery (OPTIONS/PROPFIND hierarchy),
+  `calendar-multiget`, `calendar-query(time-range)`, single/full GET; EWS
+  `FindItem+CalendarView` (±180 days, ≤1200) → ICS; `uid ↔ ItemId/ChangeKey`
+  stored in SQLite.
+- **M2 Calendar write-back**: TB create/edit/delete → `PUT`/`DELETE` → EWS
+  `CreateItem`/`UpdateItem`/`DeleteItem`; handles schema element order, FieldURI
+  namespaces, and the mandatory `ChangeKey`.
+- **M3 Meeting invitations**: parse `ATTENDEE` (required/optional) → EWS
+  attendees; create/update/delete use `SendToAllAndSaveCopy` /
+  `SendToChangedAndSaveCopy` / `SendToAllAndSaveCopy` (cancel); the read side
+  emits `ORGANIZER`/`ATTENDEE` so TB shows participants correctly.
+- **M4 Read-only GAL**: read-only LDAP v3 (Bind/Search + BER codec); filter
+  extraction → EWS `ResolveNames`; 90s cache, ≤50 per query; verified with the
+  TB address book search and compose-time autocomplete.
+- **M5 Hardening**: normalize timezones to UTC; URI attachments (body marker ↔
+  `ATTACH`); advertise calendar read/write privileges (otherwise TB forces the
+  calendar read-only on every start); sync performance (batch body fetch, no
+  per-event `GetItem`).
+
+### TODO
+
+- **M-UID alignment** (no external prerequisite; can be implemented now)
+  - **Goal**: remove calendar duplicates caused by *accepting* invitations (the
+    same meeting showing as two entries).
+  - **Evidence**: Exchange 2010 does not expose `GlobalObjectId` via the
+    standard fields, but the **extended property**
+    `DistinguishedPropertySetId=Meeting, PropertyId=3, PropertyType=Binary`
+    returns `PidLidGlobalObjectId` (base64); its hex value is *exactly* the
+    invitation's iCalendar UID — verified to match the TB-side event's `uid`.
+  - **Approach**: batch-`GetItem` this extended property → use it as the CalDAV
+    UID (instead of a random UUID) → events TB created from the invitation and
+    the EWS meeting merge automatically; migrate the local `uid↔itemid` map.
+  - **Prerequisite**: none (capability already available); only implementation
+    plus a one-time UID migration.
+- **Local-file attachments** (waiting on upstream)
+  - **Blocked by**: the TB event dialog offers only URL attachments
+    (`chrome/calendar/content/calendar-event-dialog.xhtml` has only
+    `cmd_attach_url`; `cmd_attach_cloud` is a disabled placeholder).
+  - **Condition**: upstream completes the "local file" front-end. The bridge's
+    base64 attachment path is already in place and needs almost no change.
+- **CardDAV personal contacts** (waiting on data/API)
+  - **Blocked by**: the Exchange 2010 personal Contacts folder is empty, and
+    `ResolveNames` is search-only (not enumerable), which cannot support
+    CardDAV's full-sync semantics.
+  - **Condition**: revisit CardDAV once Contacts has data and an enumerable
+    interface exists.
 
 ## 8. Tests
 

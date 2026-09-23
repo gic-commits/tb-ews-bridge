@@ -134,9 +134,10 @@ systemctl --user enable --now check-ews-url.timer           # 每 10 分钟巡�
   （`chrome/calendar/content/calendar-event-dialog.xhtml` 仅 `cmd_attach_url`，
   另有被禁用的 `cmd_attach_cloud` 占位）。因此**无法在 TB 里加本地文件附件**；
   桥端的文件型附件（base64）代码保留但实际不会被 TB 触发。待上游补全后即可接上。
-- **接受邀请的重复事件**：Exchange 2010 日历项不返回 iCalendar UID，桥侧生成
-  UUID；用户在邮箱里"接受"邀请时 TB 用邀请内嵌的原始 UID 建本地事件，二者不同
-  → 可能显示重复。根治需"邀请邮件原始 UID 对齐"（见路线图）。
+- **接受邀请的重复事件**：Exchange 2010 日历项不通过标准字段返回 iCalendar UID，桥侧
+  为每个事件生成随机 UUID；用户在邮箱里"接受"邀请时 TB 用邀请内嵌的原始 UID 建本地
+  事件，二者不同 → 同一会议显示两条。**尚未修复**；可行方案是读取会议的
+  `PidLidGlobalObjectId` 扩展属性作为 UID（已验证可读且与邀请 UID 一致），详见路线图。
 - **服务端为 Exchange 2010**：仅 EWS SOAP，依赖 `curl --ntlm`，不支持现代认证。
 - **单账户、仅本机回环**：三个服务均只监听 `127.0.0.1`。
 - **etag 版本**：读回序列化变化（如新增 `ATTENDEE`）时需递增 `etag()` 后缀
@@ -158,14 +159,43 @@ systemctl --user enable --now check-ews-url.timer           # 每 10 分钟巡�
 
 ## 7. 路线图
 
-- [x] M0 邮件桥（NTLM 透传 + 请求重写 + 操作日志）
-- [x] M1 日历只读（CalDAV 发现/查询/多取）
-- [x] M2 日历写回（PUT/DELETE → EWS Create/Update/Delete）
-- [x] M3 会议邀请（参会者 → 邀请/更新/取消）
-- [x] M4 通讯录 GAL 只读（LDAP → ResolveNames）
-- [x] M5 时区修复、URI 附件、日历读写权限
-- [ ] M-UID 对齐：消除"接受邀请"产生的日历重复
-- [ ]（上游）TB 事件对话框支持本地文件附件
+### 已完成
+
+- **M0 邮件桥**：TB 原生 EWS 请求经本地桥转发；桥完成 NTLM 握手、请求体重写
+  （`archive`→`inbox`、去 `InternetMessageId`）以适配 EWS 2010，并输出操作级日志。
+- **M1 日历只读**：CalDAV 发现（OPTIONS/PROPFIND 层级）、`calendar-multiget`、
+  `calendar-query(time-range)`、单/全量 GET；EWS `FindItem+CalendarView`（±180 天、
+  ≤1200）→ ICS；`uid ↔ ItemId/ChangeKey` 落 SQLite。
+- **M2 日历写回**：TB 建/改/删 → `PUT`/`DELETE` → EWS
+  `CreateItem`/`UpdateItem`/`DeleteItem`；处理 schema 元素顺序、FieldURI 命名空间、
+  强制 `ChangeKey`。
+- **M3 会议邀请**：解析 `ATTENDEE`（必选/可选）→ EWS 参会者；新建/更新/删除分别
+  `SendToAllAndSaveCopy` / `SendToChangedAndSaveCopy` / `SendToAllAndSaveCopy`（取消）；
+  读取侧输出 `ORGANIZER`/`ATTENDEE` 使 TB 正确显示参会人。
+- **M4 通讯录 GAL 只读**：只读 LDAP v3（Bind/Search + BER 编解码）；过滤器抽取
+  → EWS `ResolveNames`；90s 缓存、单次 ≤50；TB 地址簿搜索与写信自动补全均通。
+- **M5 加固**：时区归一到 UTC；URI 型附件（正文标记 ↔ `ATTACH`）；日历读写权限
+  宣告（否则 TB 每次启动置为只读）；同步性能（批量取正文、避免逐事件 `GetItem`）。
+
+### 待办
+
+- **M-UID 对齐**（无外部前置，可直接实现）
+  - **目标**：消除"接受邀请"产生的日历重复（同一会议在 TB 显示两条）。
+  - **现状/证据**：Exchange 2010 的标准字段不暴露 `GlobalObjectId`，但**扩展属性**
+    `DistinguishedPropertySetId=Meeting, PropertyId=3, PropertyType=Binary`
+    可读到 `PidLidGlobalObjectId`（base64）；其十六进制**正是**邀请邮件的 iCalendar
+    UID——实测与 TB 侧事件的 `uid` 完全一致。
+  - **做法**：批量 `GetItem` 读该扩展属性 → 作为 CalDAV UID（替代随机 UUID）→
+    TB 依邀请 UID 建的事件与 EWS 中会议自动归并；同时迁移本地 `uid↔itemid` 映射。
+  - **条件**：无需等待（能力已具备），仅需实现 + 一次性 UID 迁移。
+- **本地文件附件**（等待上游）
+  - **阻塞**：TB 事件对话框只提供 URL（`chrome/calendar/content/
+    calendar-event-dialog.xhtml` 仅 `cmd_attach_url`，`cmd_attach_cloud` 为禁用占位）。
+  - **条件**：上游补全"本地文件"前端。届时桥端 base64 附件路径已就绪，几乎无需改动。
+- **CardDAV 个人联系人**（等待数据/接口）
+  - **阻塞**：Exchange 2010 个人 Contacts 文件夹为空，且 `ResolveNames` 只能搜索、
+    不可枚举，无法支撑 CardDAV 的全量同步语义。
+  - **条件**：Contacts 出现数据且提供可枚举接口时再评估 CardDAV。
 
 ## 8. 测试
 
