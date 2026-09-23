@@ -166,3 +166,7 @@ python3 tests/ldap_smoke_test.py     # 自造 LDAP Bind+Search，验证过滤器
 - 仅限自有账号、内网/回环调试；`cred.json` 已 gitignore，请勿提交。
 - 服务只监听 `127.0.0.1`，不对外暴露。
 - 本项目与 Microsoft / Mozilla 无关联，仅供互操作研究。
+
+## 10. 许可
+
+[MIT](LICENSE)。贡献请见 [CONTRIBUTING.md](CONTRIBUTING.md)。
