@@ -1,0 +1,13 @@
+{
+  "host": "mail.example.com",
+  "port": 443,
+  "sni": "mail.example.com",
+  "user": "you@your-company.com",
+  "password": "your-password",
+  "proxy": null,
+  "listen": "127.0.0.1",
+  "lport": 8080,
+  "log": "/tmp/ews-bridge.log",
+  "ldap_port": 1389,
+  "ldap_base": "dc=example,dc=com"
+}

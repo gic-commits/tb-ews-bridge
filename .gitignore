@@ -1,0 +1,9 @@
+# 凭据与本地数据，禁止提交
+cred.json
+*.db
+*.sqlite
+__pycache__/
+*.pyc
+/tmp/
+*.log
+.ewsck/

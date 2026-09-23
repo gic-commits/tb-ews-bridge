@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic EWS bridge URL check (guard 127.0.0.1:8080)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=check-ews-url.service
+
+[Install]
+WantedBy=timers.target
