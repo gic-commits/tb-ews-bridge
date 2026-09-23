@@ -1,3 +1,5 @@
+**English** | [简体中文](README.zh-CN.md)
+
 # Thunderbird ↔ Exchange 2010 Bridge
 
 Use an enterprise **Exchange 2010** service from **Thunderbird** (including the
@@ -9,8 +11,7 @@ snap build) with **no third-party add-ons**:
 - **Address book (GAL)** — via a self-hosted read-only **LDAP server** bridge
   for compose-time autocomplete.
 
-> 中文说明：[README.zh-CN.md](README.zh-CN.md) ｜ Design: [docs/DESIGN.md](docs/DESIGN.md) ｜
-> Changes: [CHANGELOG.md](CHANGELOG.md)
+> Design: [docs/DESIGN.md](docs/DESIGN.md) ｜ Changes: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 

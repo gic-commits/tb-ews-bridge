@@ -1,3 +1,5 @@
+[English](README.md) | **简体中文**
+
 # Thunderbird ↔ Exchange 2010 接入桥
 
 让 **Thunderbird（含 snap 版）** 在不依赖任何第三方插件的前提下，接入企业
@@ -7,8 +9,7 @@
 - **日历** —— 自研 **CalDAV 服务端**桥接，支持只读 + 写回（建/改/删、会议邀请）；
 - **通讯录（GAL）** —— 自研 **只读 LDAP 服务端**桥接，供写信时自动补全。
 
-> English: [README.md](README.md) ｜ 设计见 [docs/DESIGN.md](docs/DESIGN.md)，
-> 变更见 [CHANGELOG.md](CHANGELOG.md)。
+> 设计见 [docs/DESIGN.md](docs/DESIGN.md)，变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
