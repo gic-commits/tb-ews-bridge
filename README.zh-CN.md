@@ -73,6 +73,9 @@ Exchange 的 `ResolveNames` 是"搜索"而非"枚举"，语义与 LDAP `SearchRe
 
 ## 4. 快速开始
 
+> 更详细的「从零开始」步骤（安装 TB、创建 EWS 账户、把 `ews_url` 指向桥、
+> 常驻与守护等）见 [docs/SETUP.zh-CN.md](docs/SETUP.zh-CN.md)。
+
 ### 4.1 配置凭据（不进源码）
 
 ```bash

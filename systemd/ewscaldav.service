@@ -6,7 +6,7 @@ After=network-online.target
 ExecStart=/usr/bin/python3 %h/bin/ewscaldav.py
 Restart=on-failure
 RestartSec=3
-Environment=EWS_BRIDGE_PATH=%h/bin/ews-bridge.py
+Environment=EWS_BRIDGE_PATH=%h/bin/ews_bridge.py
 
 [Install]
 WantedBy=default.target

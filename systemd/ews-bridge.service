@@ -1,0 +1,11 @@
+[Unit]
+Description=EWS email bridge (NTLM passthrough for Thunderbird)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/bin/ews_bridge.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

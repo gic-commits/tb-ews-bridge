@@ -85,6 +85,10 @@ takes the longest search term → `ResolveNames`.
 
 ## 4. Quick Start
 
+> For a detailed, from-scratch walkthrough (install Thunderbird, create the EWS
+> account, point `ews_url` at the bridge, run as services), see
+> [docs/SETUP.md](docs/SETUP.md).
+
 ### 4.1 Credentials (never in source)
 
 ```bash
