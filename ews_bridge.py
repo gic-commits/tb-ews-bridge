@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-import socket, ssl, argparse, re, sys, time, socketserver, subprocess, os, threading
+import socket, ssl, argparse, re, sys, time, socketserver, subprocess, os, threading, base64, hashlib
+from html import unescape as _htmlescape
+from urllib.parse import urlsplit, parse_qs
+from email import message_from_bytes, encoders
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
 
 CRED_FILE = os.environ.get("EWS_CRED",
                            os.path.expanduser("~/.config/ews-bridge/cred.json"))
@@ -27,6 +32,288 @@ def rewrite(body):
     new = re.sub(r'Id\s*=\s*["\']archive["\']', 'Id="inbox"', txt)
     new = re.sub(r"<\s*(?:\w+:)?InternetMessageId[^>]*>.+?</\s*(?:\w+:)?InternetMessageId\s*>", "", new, flags=re.S)
     return new.encode("utf-8"), new != txt
+
+CK_CACHE = {}
+CK_ERRS = (b"ErrorChangeKeyRequiredForWriteOperations",
+           b"ErrorChangeKeyMismatch", b"ErrorIrresolvableConflict",
+           b"ErrorChangeKeyRequiredForDeleteOperations")
+WRITE_RE = re.compile(rb"<(?:\w+:)?(?:UpdateItem|DeleteItem|MoveItem|CopyItem)\b")
+ITEMID_RE = re.compile(rb"<(?:\w+:)?ItemId\b[^>]*>")
+
+def _tag_attrs(tag):
+    return dict(re.findall(rb'(\w+)="([^"]*)"', tag))
+
+def ews_get_changekeys(ids):
+    if not ids:
+        return {}
+    items = "".join(f'<t:ItemId Id="{i}"/>' for i in ids)
+    xml = ('<?xml version="1.0" encoding="utf-8"?>'
+           '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+           ' xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">'
+           '<soap:Header><t:RequestServerVersion Version="Exchange2010_SP2"/></soap:Header>'
+           '<soap:Body><GetItem xmlns="http://schemas.microsoft.com/exchange/services/2006/messages">'
+           '<ItemShape><t:BaseShape>IdOnly</t:BaseShape></ItemShape>'
+           f'<ItemIds>{items}</ItemIds></GetItem></soap:Body></soap:Envelope>')
+    hdrs = [("Content-Type", "text/xml; charset=utf-8"),
+            ("SOAPAction", '"http://schemas.microsoft.com/exchange/services/2006/messages/GetItem"')]
+    try:
+        code, _, out = ews_via_curl("/ews/exchange.asmx", xml.encode("utf-8"), hdrs)
+    except Exception as e:
+        log(f"CK-GETITEM-ERR {e}", LOG)
+        return {}
+    found = {}
+    if code == 200:
+        for m in re.finditer(rb"<(?:\w+:)?ItemId\b([^>]*)>", out):
+            a = _tag_attrs(m.group(1))
+            if b"Id" in a and b"ChangeKey" in a:
+                found[a[b"Id"].decode("utf-8", "replace")] = a[b"ChangeKey"].decode("utf-8", "replace")
+    else:
+        log(f"CK-GETITEM http={code}", LOG)
+    return found
+
+def ensure_changekeys(body, force_ids=None):
+    if not WRITE_RE.search(body):
+        return body, False
+    force_ids = force_ids or set()
+    tags = list(ITEMID_RE.finditer(body))
+    need = []
+    for m in tags:
+        a = _tag_attrs(m.group(0))
+        iid = a.get(b"Id")
+        if not iid:
+            continue
+        s = iid.decode("utf-8", "replace")
+        if s in force_ids or s not in CK_CACHE:
+            need.append(s)
+    if need:
+        got = ews_get_changekeys(need)
+        CK_CACHE.update(got)
+        for s in need:
+            if s not in CK_CACHE:
+                log(f"CK-MISS no changekey for {s[:40]}...", LOG)
+    out, last, changed = [], 0, False
+    for m in tags:
+        a = _tag_attrs(m.group(0))
+        iid = a.get(b"Id")
+        if not iid:
+            continue
+        ck = CK_CACHE.get(iid.decode("utf-8", "replace"))
+        if not ck:
+            continue
+        tag = m.group(0)
+        if a.get(b"ChangeKey") == ck.encode("utf-8"):
+            continue
+        if b"ChangeKey" in a:
+            newtag = re.sub(rb'ChangeKey="[^"]*"', b'ChangeKey="' + ck.encode("utf-8") + b'"', tag)
+        else:
+            newtag = re.sub(rb'(Id="[^"]*")', rb'\1 ChangeKey="' + ck.encode("utf-8") + b'"', tag, count=1)
+        out.append(body[last:m.start()])
+        out.append(newtag)
+        last = m.end()
+        changed = True
+    if not changed:
+        return body, False
+    out.append(body[last:])
+    log(f"CK-INJ ids={len(tags)} fetched={len(need)}", LOG)
+    return b"".join(out), True
+
+def body_item_ids(body):
+    ids = set()
+    for m in ITEMID_RE.finditer(body):
+        a = _tag_attrs(m.group(0))
+        if b"Id" in a:
+            ids.add(a[b"Id"].decode("utf-8", "replace"))
+    return ids
+
+def harvest_changekeys(xml):
+    for m in re.finditer(rb"<(?:\w+:)?ItemId\b([^>]*)>", xml):
+        a = _tag_attrs(m.group(1))
+        if b"Id" in a and b"ChangeKey" in a:
+            CK_CACHE[a[b"Id"].decode("utf-8", "replace")] = a[b"ChangeKey"].decode("utf-8", "replace")
+
+MIME_CACHE = {}
+MIME_CACHE_ORDER = []
+MIME_CACHE_N = 64
+MIME_CACHE_MAXB = 96 * 1024 * 1024
+MIME_CACHE_BYTES = 0
+MIMECONTENT_RE = re.compile(
+    rb"<(?:\w+:)?MimeContent\b[^>]*>(.*?)</(?:\w+:)?MimeContent\s*>", re.S)
+XMOZ_RE = re.compile(rb"""x-moz-ews://[^"'<>\s]+""")
+CREATEITEM_RE = re.compile(rb"<(?:\w+:)?CreateItem\b")
+
+def _cache_put(fname, ctype, data):
+    global MIME_CACHE_BYTES
+    try:
+        fname = os.path.basename(fname or "").strip()
+        if not fname or not data:
+            return False
+        old = MIME_CACHE.pop(fname, None)
+        if old:
+            MIME_CACHE_BYTES -= len(old[1])
+            if fname in MIME_CACHE_ORDER:
+                MIME_CACHE_ORDER.remove(fname)
+        MIME_CACHE[fname] = (ctype, data)
+        MIME_CACHE_ORDER.append(fname)
+        MIME_CACHE_BYTES += len(data)
+        while MIME_CACHE_ORDER and (
+                len(MIME_CACHE) > MIME_CACHE_N or MIME_CACHE_BYTES > MIME_CACHE_MAXB):
+            k = MIME_CACHE_ORDER.pop(0)
+            if k in MIME_CACHE:
+                MIME_CACHE_BYTES -= len(MIME_CACHE[k][1])
+                del MIME_CACHE[k]
+        return True
+    except Exception:
+        return False
+
+def harvest_mime(xml):
+    n = f = 0
+    try:
+        for m in MIMECONTENT_RE.finditer(xml):
+            b64 = m.group(1).strip()
+            if len(b64) < 40:
+                continue
+            try:
+                raw = base64.b64decode(b64)
+            except Exception:
+                continue
+            if len(raw) < 32:
+                continue
+            try:
+                msg = message_from_bytes(raw)
+            except Exception:
+                continue
+            n += 1
+            for part in msg.walk():
+                if part.get_content_maintype() == "multipart":
+                    continue
+                fn = part.get_filename()
+                if not fn:
+                    continue
+                try:
+                    payload = part.get_payload(decode=True)
+                except Exception:
+                    payload = None
+                if payload and _cache_put(fn, part.get_content_type(), payload):
+                    f += 1
+        for m in re.finditer(
+                rb"<(?:\w+:)?FileAttachment>(.*?)</(?:\w+:)?FileAttachment>",
+                xml, re.S):
+            blk = m.group(1)
+            nm = re.search(rb"<(?:\w+:)?Name>([^<]+)</(?:\w+:)?Name\s*>", blk)
+            ct = re.search(rb"<(?:\w+:)?ContentType>([^<]+)</(?:\w+:)?ContentType\s*>", blk)
+            co = re.search(rb"<(?:\w+:)?Content>([^<]+)</(?:\w+:)?Content\s*>", blk)
+            if nm and co:
+                try:
+                    data = base64.b64decode(co.group(1).strip())
+                    ctyp = ct.group(1).decode("utf-8", "replace") if ct else "application/octet-stream"
+                    if data and _cache_put(nm.group(1).decode("utf-8", "replace"), ctyp, data):
+                        f += 1
+                except Exception:
+                    pass
+    except Exception as e:
+        log(f"MIME-HARVEST-ERR {e}", LOG)
+    if n or f:
+        log(f"MIME-HARVEST msgs={n} files={f} cache={len(MIME_CACHE)} bytes={MIME_CACHE_BYTES}", LOG)
+
+def _image_part(ctype, data, cid, fname):
+    maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
+    if not subtype:
+        subtype = "octet-stream"
+    p = MIMEBase(maintype, subtype)
+    p.set_payload(data)
+    encoders.encode_base64(p)
+    p.add_header("Content-ID", "<%s>" % cid)
+    try:
+        p.add_header("Content-Disposition", "inline", filename=fname)
+    except Exception:
+        p["Content-Disposition"] = "inline"
+    return p
+
+def fix_forward_images(body):
+    if not CREATEITEM_RE.search(body[:3000]):
+        return body, False
+    m = MIMECONTENT_RE.search(body)
+    if not m:
+        return body, False
+    try:
+        mime = base64.b64decode(m.group(1).strip())
+    except Exception:
+        return body, False
+    if b"x-moz-ews" not in mime:
+        return body, False
+    urls = list(dict.fromkeys(XMOZ_RE.findall(mime)))
+    if not urls:
+        return body, False
+    repl = {}
+    imgs = []
+    miss = []
+    for u in urls:
+        try:
+            uq = _htmlescape(u.decode("ascii", "replace"))
+            fname = (parse_qs(urlsplit(uq).query).get("filename") or [""])[0]
+        except Exception:
+            fname = ""
+        if not fname:
+            continue
+        key = os.path.basename(fname)
+        if key in repl:
+            continue
+        ent = MIME_CACHE.get(key)
+        if not ent:
+            miss.append(key)
+            continue
+        ctype, data = ent
+        cid = "img-" + hashlib.md5(key.encode("utf-8", "replace") + data).hexdigest()[:20]
+        repl[key] = (u, cid)
+        imgs.append((ctype, data, cid, key))
+    if not repl:
+        if miss:
+            log(f"IMGFIX-MISS miss={miss} cache={len(MIME_CACHE)}", LOG)
+        return body, False
+    new_mime = mime
+    placed = []
+    used = set()
+    for ctype, data, cid, key in imgs:
+        u, _cid = repl[key]
+        if u in new_mime and key not in used:
+            new_mime = new_mime.replace(u, b"cid:" + cid.encode("ascii"))
+            placed.append((ctype, data, cid, key))
+            used.add(key)
+    if not placed:
+        log("IMGFIX no-url-match", LOG)
+        return body, False
+    try:
+        msg = message_from_bytes(new_mime)
+    except Exception as e:
+        log(f"IMGFIX-PARSE {e}", LOG)
+        return body, False
+    img_parts = [_image_part(ct, data, cid, fn) for ct, data, cid, fn in placed]
+    if msg.get_content_maintype() == "multipart" and msg.get_content_subtype() == "related":
+        out_msg = msg
+        for p in img_parts:
+            out_msg.attach(p)
+    else:
+        rel = MIMEMultipart("related")
+        keep = {"content-type", "content-transfer-encoding", "mime-version"}
+        for k, v in list(msg.items()):
+            if k.lower() not in keep:
+                rel[k] = v
+                del msg[k]
+        rel.attach(msg)
+        for p in img_parts:
+            rel.attach(p)
+        out_msg = rel
+    try:
+        new_bytes = out_msg.as_bytes()
+    except Exception as e:
+        log(f"IMGFIX-ASBYTES {e}", LOG)
+        return body, False
+    nb64 = base64.b64encode(new_bytes)
+    body = body[:m.start(1)] + nb64 + body[m.end(1):]
+    log(f"IMGFIX imgs={len(placed)} miss={len(miss)} mime {len(mime)}->{len(new_bytes)}B", LOG)
+    if miss:
+        log(f"IMGFIX-MISS miss={miss}", LOG)
+    return body, True
 
 def open_upstream(host, port, sni, proxy):
     if proxy:
@@ -252,6 +539,9 @@ def ews_via_curl(path, body, req_headers):
         out_body = open(bpath, "rb").read()
     except Exception:
         out_body = b""
+    if p.returncode != 0:
+        log(f"CURL-RC {p.returncode} code={code} got={len(out_body)}B "
+            f"err={p.stderr.decode('utf-8','replace')[:300]}", LOG)
     out_headers = []
     try:
         with open(hpath) as fh:
@@ -261,6 +551,13 @@ def ews_via_curl(path, body, req_headers):
                     out_headers.append((k.strip(), v.strip()))
     except Exception:
         pass
+    for k, v in out_headers:
+        if k.lower() == "content-length":
+            try:
+                if int(v) != len(out_body):
+                    log(f"TRUNC content-length={v} got={len(out_body)}", LOG)
+            except Exception:
+                pass
     for f in (hpath, bpath):
         try:
             os.unlink(f)
@@ -338,14 +635,29 @@ class Handler(socketserver.BaseRequestHandler):
                     auth_info = ntlm_info(auth_val) if auth_val else None
                     if path.lower().endswith("exchange.asmx") and body and method in ("POST",):
                         new_body, changed = rewrite(body)
-                        content_len = len(new_body)
-                        req_headers = [(k, v) if k.lower() != "content-length" else ("Content-Length", str(content_len)) for k, v in req_headers]
-                        log(f"<- {method} {path} body={len(new_body)}B rewrite={changed} auth={_authhdr()}{' ' + auth_info if auth_info else ''}", LOG)
                         body = new_body
+                        body, ck_inj = ensure_changekeys(body)
+                        body, img_inj = fix_forward_images(body)
+                        content_len = len(body)
+                        req_headers = [(k, v) if k.lower() != "content-length" else ("Content-Length", str(content_len)) for k, v in req_headers]
+                        log(f"<- {method} {path} body={len(body)}B rewrite={changed} ck={ck_inj} img={img_inj} auth={_authhdr()}{' ' + auth_info if auth_info else ''}", LOG)
                     else:
                         log(f"<- {method} {path} body={len(body)}B auth={_authhdr()}{' ' + auth_info if auth_info else ''}", LOG)
                     if path.lower().endswith("exchange.asmx") and method in ("POST",):
                         code, out_headers, out_body = ews_via_curl(path, body, req_headers)
+                        if code < 400 and any(e in out_body for e in CK_ERRS):
+                            ids = body_item_ids(body)
+                            for i in ids:
+                                CK_CACHE.pop(i, None)
+                            body, retry_inj = ensure_changekeys(body, force_ids=ids)
+                            if retry_inj:
+                                content_len = len(body)
+                                req_headers = [(k, v) if k.lower() != "content-length" else ("Content-Length", str(content_len)) for k, v in req_headers]
+                                log(f"CK-RETRY ids={len(ids)}", LOG)
+                                code, out_headers, out_body = ews_via_curl(path, body, req_headers)
+                        if code < 400:
+                            harvest_changekeys(out_body)
+                            harvest_mime(out_body)
                         if code >= 400:
                             log(f"!! ews-curl {code} for {path} body={len(out_body)}B", LOG)
                             log("   req-body=" + body.decode("utf-8", "replace")[:2000], LOG)

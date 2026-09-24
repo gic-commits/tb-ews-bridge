@@ -43,7 +43,7 @@ Thunderbird ──(原生 LDAP  :17089)──> ldapgal.py     ──┘
 
 | 文件 | 端口 | 说明 |
 |---|---|---|
-| `ews_bridge.py` | 17080 | EWS 中继：NTLM 握手（交给 `curl --ntlm`）、请求体重写、自带 DNS、EWS 操作级日志 |
+| `ews_bridge.py` | 17080 | EWS 中继：NTLM 握手（交给 `curl --ntlm`）、请求体重写、写操作 ChangeKey 注入、转发/回复内联图片修复、自带 DNS、EWS 操作级日志 |
 | `ewscaldav.py` | 17081 | CalDAV 服务端：PROPFIND / REPORT（multiget、calendar-query）/ GET / PUT / DELETE；EWS `FindItem`+`CalendarView` → ICS；UID↔ItemId/ChangeKey 落 SQLite；写回 `CreateItem`/`UpdateItem`/`DeleteItem` |
 | `ldapgal.py` | 17089 | 只读 LDAP v3（Bind/Search，BER 最小编解码）：过滤器抽取 → EWS `ResolveNames`（GAL），90s 缓存，单次 ≤50 条 |
 | `check-ews-url.sh` | - | EWS 桥地址守卫：校验/恢复 TB 的 `ews_url` 指向本机桥（配 10min systemd timer） |
@@ -54,7 +54,12 @@ Thunderbird ──(原生 LDAP  :17089)──> ldapgal.py     ──┘
 ### 3.1 邮件
 TB 以 Exchange(EWS) 账户接入，请求经 17080 桥转发；EWS `POST …/exchange.asmx`
 走 `curl --ntlm`。请求体重写用于规避 EWS 2010 的只读写校验
-（`ErrorChangeKeyRequiredForWriteOperations`）。
+（`ErrorChangeKeyRequiredForWriteOperations`）。写操作（`UpdateItem`/
+`DeleteItem`/…）自动做 **ChangeKey 注入**：缺失的 ChangeKey 经批量
+`GetItem(IdOnly)` 回取并缓存，被拒再强制刷新重试一次——点未读邮件可正常
+变已读。转发/回复中引用内联图片的 Thunderbird 私有 `x-moz-ews://` URL
+会被改写回 `cid:`，并把此前从 `MimeContent` 响应中缓存的图片部件重新挂成
+`multipart/related` 树——收件人可以看到内联图片。
 
 ### 3.2 日历（读 + 写回）
 - **读**：层级发现（principal → calendar-home → calendar）、`calendar-multiget`、
@@ -192,7 +197,9 @@ systemctl --user enable --now check-ews-url.timer           # 每 10 分钟巡�
 ### 已完成
 
 - **M0 邮件桥**：TB 原生 EWS 请求经本地桥转发；桥完成 NTLM 握手、请求体重写
-  （`archive`→`inbox`、去 `InternetMessageId`）以适配 EWS 2010，并输出操作级日志。
+  （`archive`→`inbox`、去 `InternetMessageId`）以适配 EWS 2010，写操作自动注入
+  缺失的 ChangeKey，转发/回复内联图片修复（`x-moz-ews://` → `cid:` +
+  `multipart/related`），并输出操作级日志。
 - **M1 日历只读**：CalDAV 发现（OPTIONS/PROPFIND 层级）、`calendar-multiget`、
   `calendar-query(time-range)`、单/全量 GET；EWS `FindItem+CalendarView`（±180 天、
   ≤1200）→ ICS；`uid ↔ ItemId/ChangeKey` 落 SQLite。

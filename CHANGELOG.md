@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-09-24（M0 邮件桥两处修复）
+
+### M0 修复 — 点未读邮件不变已读（写操作缺 ChangeKey）✅
+- **现象**：TB 里点开未读邮件，列表不立即变已读；日志反复出现
+  `ErrorChangeKeyRequiredForWriteOperations`。
+- **根因**：TB 原生 EWS 发出的 `UpdateItem`（`IsRead` 置位）`ItemId` 不带
+  `ChangeKey`，EWS 2010 写校验一律拒绝；此前桥只重写 `archive`/`InternetMessageId`，不补 ChangeKey。
+- **修复**（`ews_bridge.py`）：`CK_CACHE` + 写操作（Update/Delete/Move/Copy）
+  出站前 `ensure_changekeys` —— 缺 ChangeKey 的 `ItemId` 经批量
+  `GetItem(IdOnly)`（**不带** `Traversal`，否则 `ErrorSchemaValidation`）回取并缓存注入；
+  响应含 ChangeKey 类错误码时清缓存、强制刷新重试一次；成功响应
+  `harvest_changekeys` 回填缓存。
+- **验证**：裸 `UpdateItem`（无 CK）经桥两次均 `NoError`；真机点未读邮件立即变已读。
+
+### M0 修复 — 转发带图邮件收件人看不到图片 ✅
+- **现象**：转发含内联截图的邮件，收件人看不到图片（自己发件箱能看）。
+- **根因**：TB 把 `cid:` 引用改写成私有
+  `x-moz-ews://user@host/…?part=1.2.N&type=…&filename=…` 直接塞进出站
+  `MimeContent`（仅 ~4.5KB，不含图片数据），出站前未还原为 `cid:`+附件；
+  收件人客户端无法解析该私有 URL。
+- **修复**：桥维护 filename→(ctype, data) 的 MIME 附件缓存——凡 EWS 响应
+  （`GetItem` 含 `MimeContent`、`FileAttachment` 含 `Content`）路过即
+  `harvest_mime` 落缓存（LRU，64 条/96MB）；`CreateItem` 出站前
+  `fix_forward_images` 解码 `MimeContent`，把 `x-moz-ews://` 按
+  `filename=` 查缓存改写为 `cid:`，缺图打 `IMGFIX-MISS` 日志并保持原样
+  （与修复前行为一致，不引入回归），命中的图片部件以 base64 +
+  `Content-ID` 重新挂进 `multipart/related`（顶层非 related 时包一层，
+  Subject/To 等头移到外层），重编码回 `MimeContent` 并同步 `Content-Length`。
+- **诊断**：`ews_via_curl` 补 `CURL-RC`（curl 非零退出）与 `TRUNC`
+  （响应 `Content-Length` ≠ 实收）日志，防大响应静默截断。
+- **验证**：离线用真实转发 dump + 合成缓存单测通过；真机经桥
+  `GetItem(IncludeMimeContent)` 暖缓存 → 重放 `SaveOnly` 建草稿 →
+  取回草稿 `MimeContent` 确认：`multipart/related` >
+  `multipart/alternative` + 3 个有效 PNG（`Content-ID` 与 HTML
+  `src="cid:…"` 全部对应，quoted-printable 解码后 0 处 `x-moz-ews`）→
+  草稿硬删除清理。
+
 ## 2026-09-22 ~ 09-23（M0 邮件桥 + M1 日历只读 + M4 LDAP 起步）
 
 ### M0 — 邮件桥（`ews_bridge.py`，17080）

@@ -50,7 +50,7 @@ EWS-specific knowledge and compatibility handling live in the local bridge.**
 
 | File | Port | Description |
 |---|---|---|
-| `ews_bridge.py` | 17080 | EWS relay: NTLM handshake (delegated to `curl --ntlm`), request-body rewrite, built-in DNS, per-operation EWS logging |
+| `ews_bridge.py` | 17080 | EWS relay: NTLM handshake (delegated to `curl --ntlm`), request-body rewrite, ChangeKey injection for writes, inline-image repair on forward/reply, built-in DNS, per-operation EWS logging |
 | `ewscaldav.py` | 17081 | CalDAV server: PROPFIND / REPORT (multiget, calendar-query) / GET / PUT / DELETE; EWS `FindItem`+`CalendarView` → ICS; UID↔ItemId/ChangeKey in SQLite; write-back via `CreateItem`/`UpdateItem`/`DeleteItem` |
 | `ldapgal.py` | 17089 | Read-only LDAP v3 (Bind/Search, minimal BER codec): filter extraction → EWS `ResolveNames` (GAL), 90s cache, ≤50 entries per query |
 | `check-ews-url.sh` | - | EWS bridge URL guard: verifies/restores TB's `ews_url` to the local bridge (with a 10-min systemd timer) |
@@ -62,6 +62,13 @@ EWS-specific knowledge and compatibility handling live in the local bridge.**
 Thunderbird connects as an Exchange (EWS) account through the 17080 bridge;
 `POST …/exchange.asmx` uses `curl --ntlm`. Request rewriting works around EWS
 2010's read-only validation (`ErrorChangeKeyRequiredForWriteOperations`).
+Write operations (`UpdateItem`/`DeleteItem`/…) get **ChangeKey injection**:
+missing ChangeKeys are fetched with a batch `GetItem(IdOnly)`, cached, and
+retried once if the server still rejects them — so marking messages read/unread
+works. Forwarded/replied messages that reference inline images via Thunderbird's
+private `x-moz-ews://` URLs are rewritten back to `cid:` and the image parts
+(recovered from `MimeContent` responses seen earlier) are re-attached as a
+`multipart/related` tree — recipients see the inline images.
 
 ### 3.2 Calendar (read + write)
 - **Read**: hierarchy discovery (principal → calendar-home → calendar),
@@ -220,7 +227,9 @@ overwritten on exit.
 
 - **M0 Mail bridge**: Thunderbird's native EWS requests are relayed by the local
   bridge, which performs the NTLM handshake and rewrites request bodies
-  (`archive`→`inbox`, drops `InternetMessageId`) to satisfy EWS 2010, with
+  (`archive`→`inbox`, drops `InternetMessageId`) to satisfy EWS 2010, injects
+  missing ChangeKeys for write operations, repairs inline images on
+  forward/reply (`x-moz-ews://` → `cid:` + `multipart/related`), with
   per-operation logging.
 - **M1 Read-only calendar**: CalDAV discovery (OPTIONS/PROPFIND hierarchy),
   `calendar-multiget`, `calendar-query(time-range)`, single/full GET; EWS
