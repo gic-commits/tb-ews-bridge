@@ -2,14 +2,14 @@
 
 ## 2026-09-22 ~ 09-23（M0 邮件桥 + M1 日历只读 + M4 LDAP 起步）
 
-### M0 — 邮件桥（`ews_bridge.py`，8080）
+### M0 — 邮件桥（`ews_bridge.py`，17080）
 - TCP 级 IMAP/SMTP/HTTP 透传；EWS POST 交 `curl --ntlm` 完成 NTLM 握手。
 - 请求体重写：`Id="archive"`→`inbox`、剔除 `InternetMessageId`，
   规避 EWS 2010 SP3 只读写校验（`ErrorChangeKeyRequiredForWriteOperations`）。
 - 操作级日志：SOAP 操作名 + Fault/ResponseCode 单行摘要。
 - 自带 A 记录 DNS 查询 + 5min 缓存，`--resolve` 钉 IP。
 
-### M1 — CalDAV 日历只读（`ewscaldav.py`，8081）✅ 可用
+### M1 — CalDAV 日历只读（`ewscaldav.py`，17081）✅ 可用
 - 发现层：OPTIONS / PROPFIND（principal → home → calendar，Depth:1 列事件）。
 - 查询层：REPORT `calendar-multiget` 与 `calendar-query(time-range)`；
   GET 单事件 / 全量 ICS。
@@ -20,7 +20,7 @@
 - UID 映射：SQLite `uid ↔ ItemId/ChangeKey`（2010 不提供 GlobalObjectId）。
 - 真机：TB156 订阅成功，depth-1 列 159 条、multiget 取回 135 条事件。
 
-### M4 — 只读 LDAP 通讯录（`ldapgal.py`，1389）✅ 桥端到端已通
+### M4 — 只读 LDAP 通讯录（`ldapgal.py`，17089）✅ 桥端到端已通
 - LDAP v3 Bind/Search/Unbind 最小子集；BER 编解码；SearchResEntry + Done。
 - 过滤器抽取：and/or/not 递归、子串/等值叶子解析（递归下降嵌套结构），
   最长搜索词 → EWS `ResolveNames`。
@@ -79,7 +79,7 @@
   `_fetch_changekey` re-FindItem 回取最新 ChangeKey 再重试。
 - 失败判定升级：仅看 200 + 无 Fault 不够，须解析 `ResponseClass`
   （UpdateItem 可 200 而 `<UpdateItemResponseMessage ResponseClass="Error">`）。
-- ⭐ 真机全链路（经 8081 桥）：`PUT` 建（201）→ `PUT` 改（204，
+- ⭐ 真机全链路（经 17081 桥）：`PUT` 建（201）→ `PUT` 改（204，
   主题/时间/地点全变）→ `DELETE` 删（204），EWS FindItem 确认无残留。
 - 测试卫生：真实日历破坏性测试统一 `M2-TEST-*` 前缀并事后自清理。
 
@@ -107,7 +107,7 @@
   `Location` 之后；`UpdateItem` 用 `FieldURI=calendar:RequiredAttendees|OptionalAttendees`。
 - DB 表 `ev` 增列 `attendees`（JSON），供 DELETE 判断是否发取消通知。
 - ⭐ 真机验证：建会 `IsMeeting=true`、`MeetingRequestWasSent=true`、
-  `MyResponseType=Organizer`，GetItem 参会者字段齐全；经 8081 桥
+  `MyResponseType=Organizer`，GetItem 参会者字段齐全；经 17081 桥
   `PUT 201（含参会者）→ DB 记录 attendees → DELETE 204`、EWS 无残留。
 
 ### M5 — 会议附件（URI 型）✅ 全链路通过
@@ -199,7 +199,7 @@
 - 背景：`ews_url` 无法在 TB UI 配置，若被改回真实域名会绕过本机 EWS 桥。
 - 功能：检测 `mail.server.server2.ews_url` 与
   `mail.outgoingserver.ews1.ews_url` 是否为
-  `http://127.0.0.1:8080/ews/exchange.asmx`，异常则自动恢复并备份
+  `http://127.0.0.1:17080/ews/exchange.asmx`，异常则自动恢复并备份
   （`prefs.js.bak-checkews`）；`-n` 提供 dry-run 检查模式。
 - 破坏性实测：伪装 ews_url 被改坏 → 脚本成功恢复两处、备份生成、
   与原始 prefs.js `diff` 完全一致。

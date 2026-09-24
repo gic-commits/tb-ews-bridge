@@ -3,7 +3,7 @@
 # check-ews-url.sh — 检查并恢复 Thunderbird 的 EWS 桥地址
 #
 # 背景：TB/owl 通过 prefs.js 里的 ews_url 指向本地 EWS 桥
-# (http://127.0.0.1:8080/ews/exchange.asmx)。该值无法在 UI 配置，
+# (http://127.0.0.1:17080/ews/exchange.asmx)。该值无法在 UI 配置，
 # 若被（如宿主名/URL 修改、扩展重置）改回真实域名 mail.example.com，
 # TB 会绕过本桥直连内网/公网服务器，导致邮件失效。
 # 本脚本检测异常并自动恢复到桥地址，同时留下备份。
@@ -18,7 +18,7 @@ set -u
 
 PREF="$HOME/.thunderbird/${TB_PROFILE:?set TB_PROFILE to your profile dir}/prefs.js"
 LOG="$HOME/.cache/check-ews-url.log"
-BRIDGE_URL="http://127.0.0.1:8080/ews/exchange.asmx"
+BRIDGE_URL="http://127.0.0.1:17080/ews/exchange.asmx"
 EXPECTED_PREFS=(
   'mail.server.server2.ews_url'
   'mail.outgoingserver.ews1.ews_url'
@@ -73,7 +73,7 @@ done
 
 # mail.ews.server_versions 缓存: 期望含桥地址键。仅提示，不自动改，
 # 避免破坏 TB 的 Exchange 版本映射表。
-if grep -q '127.0.0.1:8080/ews/exchange.asmx' "$PREF"; then
+if grep -q '127.0.0.1:17080/ews/exchange.asmx' "$PREF"; then
   echo "  OK: server_versions 含桥地址"
 else
   echo "  notice: server_versions 未含桥地址"

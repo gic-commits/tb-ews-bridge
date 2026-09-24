@@ -1,5 +1,5 @@
 [Unit]
-Description=EWS bridge URL check (guard 127.0.0.1:8080)
+Description=EWS bridge URL check (guard 127.0.0.1:17080)
 After=network-online.target
 
 [Service]

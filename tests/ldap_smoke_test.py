@@ -15,7 +15,7 @@ inner = enc(0x04,b"dc=example,dc=com") + enc(0x0a,b"\x02") + enc(0x0a,b"\x00") \
       + enc(0x02,b"\x00\x00") + enc(0x02,b"\x00\x00") + enc(0x01,b"\x00") + filt \
       + enc(0x30, b"".join(enc(0x04,a) for a in
           ["cn","sn","givenName","mail","title","department","company","mobile","objectClass"]))
-s=socket.create_connection(("127.0.0.1",1389), timeout=30)
+s=socket.create_connection(("127.0.0.1",17089), timeout=30)
 s.sendall(msg(1, enc(0x60,br)))
 r=s.recv(65536); print("bind:", "OK" if b"\x61" in r[:20] else r[:40])
 s.sendall(msg(2, enc(0x63,inner)))

@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodic EWS bridge URL check (guard 127.0.0.1:8080)
+Description=Periodic EWS bridge URL check (guard 127.0.0.1:17080)
 
 [Timer]
 OnBootSec=2min

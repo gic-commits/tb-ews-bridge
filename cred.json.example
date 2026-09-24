@@ -6,8 +6,8 @@
   "password": "your-password",
   "proxy": null,
   "listen": "127.0.0.1",
-  "lport": 8080,
+  "lport": 17080,
   "log": "/tmp/ews-bridge.log",
-  "ldap_port": 1389,
+  "ldap_port": 17089,
   "ldap_base": "dc=example,dc=com"
 }

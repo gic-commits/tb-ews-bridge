@@ -12,7 +12,7 @@ def _load_bridge():
     mod.ARGS = argparse.Namespace(host=cfg["host"], port=cfg["port"],
                                   user=cfg["user"], password=cfg["password"],
                                   proxy=cfg.get("proxy"), sni=cfg.get("sni", cfg["host"]),
-                                  lport=cfg.get("lport", 8080),
+                                  lport=cfg.get("lport", 17080),
                                   listen=cfg.get("listen", "127.0.0.1"), log=cfg["log"])
     mod.LOG = open(cfg["log"], "a")
     return mod
@@ -326,7 +326,7 @@ if __name__ == "__main__":
     import sys
     _c = b.load_conf()
     BASE = os.environ.get("LDAP_BASE_DN", _c.get("ldap_base", "dc=example,dc=com"))
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(_c.get("ldap_port", 1389))
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(_c.get("ldap_port", 17089))
     elog(f"LDAP GAL server start on 127.0.0.1:{port}")
     server = socketserver.ThreadingTCPServer(("127.0.0.1", port), LDAPHandler)
     server.allow_reuse_address = True

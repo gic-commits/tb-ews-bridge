@@ -1166,7 +1166,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--listen", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8081)
+    ap.add_argument("--port", type=int, default=17081)
     ar = ap.parse_args()
     _c = b.load_conf()
     b.ARGS = argparse.Namespace(host=_c["host"], port=_c["port"], user=_c["user"],

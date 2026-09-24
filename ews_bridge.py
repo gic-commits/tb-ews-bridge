@@ -8,7 +8,7 @@ def load_conf():
     import json
     cfg = {"host": "mail.example.com", "port": 443, "sni": "mail.example.com",
            "user": "", "password": "", "proxy": None,
-           "listen": "127.0.0.1", "lport": 8080,
+           "listen": "127.0.0.1", "lport": 17080,
            "log": "/tmp/ews-bridge.log"}
     try:
         with open(CRED_FILE) as fh:
@@ -424,7 +424,7 @@ if __name__ == "__main__":
     _c = load_conf()
     ap = argparse.ArgumentParser()
     ap.add_argument("--listen", default=_c.get("listen", "127.0.0.1"))
-    ap.add_argument("--lport", type=int, default=_c.get("lport", 8080))
+    ap.add_argument("--lport", type=int, default=_c.get("lport", 17080))
     ap.add_argument("--host", default=_c.get("host", "mail.example.com"))
     ap.add_argument("--port", type=int, default=_c.get("port", 443))
     ap.add_argument("--sni", default=_c.get("sni", _c.get("host", "mail.example.com")))

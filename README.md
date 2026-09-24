@@ -38,9 +38,9 @@ This project therefore adds a **local compatibility / translation bridge**:
   translated to EWS by the bridge.
 
 ```
-Thunderbird ──(native EWS    :8080)──> ews_bridge.py ──(NTLM)──> mail.example.com:443 EWS
-Thunderbird ──(native CalDAV :8081)──> ewscaldav.py   ──┘
-Thunderbird ──(native LDAP   :1389)──> ldapgal.py     ──┘
+Thunderbird ──(native EWS    :17080)──> ews_bridge.py ──(NTLM)──> mail.example.com:443 EWS
+Thunderbird ──(native CalDAV :17081)──> ewscaldav.py   ──┘
+Thunderbird ──(native LDAP   :17089)──> ldapgal.py     ──┘
 ```
 
 Core principle: **zero add-ons on the TB side, native protocols only; all
@@ -50,16 +50,16 @@ EWS-specific knowledge and compatibility handling live in the local bridge.**
 
 | File | Port | Description |
 |---|---|---|
-| `ews_bridge.py` | 8080 | EWS relay: NTLM handshake (delegated to `curl --ntlm`), request-body rewrite, built-in DNS, per-operation EWS logging |
-| `ewscaldav.py` | 8081 | CalDAV server: PROPFIND / REPORT (multiget, calendar-query) / GET / PUT / DELETE; EWS `FindItem`+`CalendarView` → ICS; UID↔ItemId/ChangeKey in SQLite; write-back via `CreateItem`/`UpdateItem`/`DeleteItem` |
-| `ldapgal.py` | 1389 | Read-only LDAP v3 (Bind/Search, minimal BER codec): filter extraction → EWS `ResolveNames` (GAL), 90s cache, ≤50 entries per query |
+| `ews_bridge.py` | 17080 | EWS relay: NTLM handshake (delegated to `curl --ntlm`), request-body rewrite, built-in DNS, per-operation EWS logging |
+| `ewscaldav.py` | 17081 | CalDAV server: PROPFIND / REPORT (multiget, calendar-query) / GET / PUT / DELETE; EWS `FindItem`+`CalendarView` → ICS; UID↔ItemId/ChangeKey in SQLite; write-back via `CreateItem`/`UpdateItem`/`DeleteItem` |
+| `ldapgal.py` | 17089 | Read-only LDAP v3 (Bind/Search, minimal BER codec): filter extraction → EWS `ResolveNames` (GAL), 90s cache, ≤50 entries per query |
 | `check-ews-url.sh` | - | EWS bridge URL guard: verifies/restores TB's `ews_url` to the local bridge (with a 10-min systemd timer) |
 | `tests/` | - | Self-tests: EWS contacts/ResolveNames probing, LDAP Bind+Search smoke test |
 
 ## 3. Status
 
 ### 3.1 Mail
-Thunderbird connects as an Exchange (EWS) account through the 8080 bridge;
+Thunderbird connects as an Exchange (EWS) account through the 17080 bridge;
 `POST …/exchange.asmx` uses `curl --ntlm`. Request rewriting works around EWS
 2010's read-only validation (`ErrorChangeKeyRequiredForWriteOperations`).
 
@@ -98,9 +98,9 @@ cat > ~/.config/ews-bridge/cred.json <<'EOF'
   "password": "your-password",
   "proxy": null,
   "listen": "127.0.0.1",
-  "lport": 8080,
+  "lport": 17080,
   "log": "/tmp/ews-bridge.log",
-  "ldap_port": 1389,
+  "ldap_port": 17089,
   "ldap_base": "dc=example,dc=com"
 }
 EOF
@@ -112,9 +112,9 @@ chmod 600 ~/.config/ews-bridge/cred.json
 ### 4.2 Run the services
 
 ```bash
-python3 ews_bridge.py                 # EWS relay (8080)
-python3 ewscaldav.py                  # CalDAV calendar (8081)
-python3 ldapgal.py 1389               # LDAP address book (1389)
+python3 ews_bridge.py                 # EWS relay (17080)
+python3 ewscaldav.py                  # CalDAV calendar (17081)
+python3 ldapgal.py 17089               # LDAP address book (17089)
 ```
 
 systemd user-unit templates are in `systemd/`.
@@ -122,11 +122,11 @@ systemd user-unit templates are in `systemd/`.
 ### 4.3 Thunderbird setup
 
 1. **Mail**: create an Exchange (EWS) account and point `ews_url` at
-   `http://127.0.0.1:8080/ews/exchange.asmx` (this value is not in the UI; use
+   `http://127.0.0.1:17080/ews/exchange.asmx` (this value is not in the UI; use
    `check-ews-url.sh` to keep it guarded).
 2. **Calendar** → New Calendar → Network Calendar (CalDAV), URL:
-   `http://127.0.0.1:8081/dav/you@your-company.com/exchange/`
-3. **Address book** → New → LDAP Directory: Host `127.0.0.1`, Port `1389`,
+   `http://127.0.0.1:17081/dav/you@your-company.com/exchange/`
+3. **Address book** → New → LDAP Directory: Host `127.0.0.1`, Port `17089`,
    Base DN `dc=example,dc=com` (enable "search in address book when composing").
 4. **Compose autocomplete** → Settings → Composition → Addressing: change
    **Directory Server** from `None` to that LDAP directory (equivalently, in
@@ -140,6 +140,35 @@ TB_PROFILE=~/.thunderbird/<profile> ./check-ews-url.sh      # check/restore
 TB_PROFILE=~/.thunderbird/<profile> ./check-ews-url.sh -n   # check only (dry run)
 systemctl --user enable --now check-ews-url.timer           # run every 10 min
 ```
+
+### 4.5 Ports and how to change them
+
+Defaults (all bind `127.0.0.1`, non-privileged):
+
+| Service | Default port | Where it is configured |
+|---|---|---|
+| Mail EWS relay (`ews_bridge.py`) | `17080` | `cred.json` → `lport` (or `--lport`) |
+| Calendar CalDAV (`ewscaldav.py`) | `17081` | `--port N` (default `17081`; add it to the systemd `ExecStart`) |
+| Address book LDAP (`ldapgal.py`) | `17089` | CLI argument (`ldapgal.py N`) or `cred.json` → `ldap_port` |
+
+To change any port, update **all** of the following consistently:
+
+1. The service config above (and the matching `systemd/*.service` `ExecStart` for
+   `ewscaldav` / `ldapgal`; `ews_bridge` reads `lport` from `cred.json`).
+2. `check-ews-url.sh` → `BRIDGE_URL` (and its `server_versions` grep literal) —
+   only if you change the mail port.
+3. Thunderbird side (in `prefs.js`, or via the account / calendar / address-book
+   dialogs):
+   - `mail.server.*.ews_url`, `mail.outgoingserver.*.ews_url` →
+     `http://127.0.0.1:<mail port>/ews/exchange.asmx`
+   - `mail.ews.server_versions` (JSON key)
+   - `calendar.registry.<id>.uri` →
+     `http://127.0.0.1:<caldav port>/dav/<user>/exchange/`
+   - `ldap_2.servers.<name>.uri` →
+     `ldap://127.0.0.1:<ldap port>/<base>??sub?(objectclass=*)`
+
+Close Thunderbird before editing `prefs.js`, otherwise the changes are
+overwritten on exit.
 
 ## 5. Known Limitations
 

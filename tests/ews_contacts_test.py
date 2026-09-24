@@ -7,7 +7,7 @@ spec.loader.exec_module(b)
 cfg = b.load_conf()
 b.ARGS = argparse.Namespace(host=cfg["host"], port=cfg["port"], user=cfg["user"],
                             password=cfg["password"], proxy=cfg.get("proxy"), sni=cfg.get("sni", cfg["host"]),
-                            lport=cfg.get("lport", 8080), listen=cfg.get("listen", "127.0.0.1"), log=cfg["log"])
+                            lport=cfg.get("lport", 17080), listen=cfg.get("listen", "127.0.0.1"), log=cfg["log"])
 b.LOG = open(cfg["log"], "a")
 
 def call(action, body, tries=3):

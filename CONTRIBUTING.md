@@ -18,16 +18,16 @@ $EDITOR ~/.config/ews-bridge/cred.json      # 填 host/user/password 等
 chmod 600 ~/.config/ews-bridge/cred.json
 
 # 2) 启动
-python3 ews_bridge.py     # :8080
-python3 ewscaldav.py      # :8081
-python3 ldapgal.py 1389   # :1389
+python3 ews_bridge.py     # :17080
+python3 ewscaldav.py      # :17081
+python3 ldapgal.py 17089   # :17089
 ```
 
 自测脚本：
 
 ```bash
 python3 tests/ews_contacts_test.py   # 需先配置 cred.json
-python3 tests/ldap_smoke_test.py     # 需 ldapgal.py 已在 1389 运行
+python3 tests/ldap_smoke_test.py     # 需 ldapgal.py 已在 17089 运行
 python3 -m py_compile ews_bridge.py ewscaldav.py ldapgal.py
 ```
 
