@@ -92,7 +92,8 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND \
 
 1. **日历 → 新建日历 → 网络日历（CalDAV）**，URL：
    `http://127.0.0.1:17081/dav/you@your-company.com/exchange/`
-2. 订阅后即可浏览/编辑事件；若显示为“只读”，见 §9。
+2. 订阅后，**右键日历 → 属性 → 勾选“离线支持”**——不勾选时 TB 不会拉取/
+   缓存远程事件，日历始终为空。勾选后即可浏览/编辑事件；若显示为“只读”，见 §9。
 
 ## 6. 添加 LDAP 通讯录与写信补全
 
@@ -131,6 +132,8 @@ systemctl --user enable --now check-ews-url.timer     # 每 10 分钟守护 ews_
   `https://<exchange-host>/owa/` 验证；账号被锁通常约 30 分钟自动解锁。
 - **日历总是只读**：确认桥的 `PROPFIND` 返回 `current-user-privilege-set`
   含 `write`（本仓库已支持）；TB 只在 `readOnly=false` 时才重估权限。
+- **日历不显示任何事件**：右键日历 → 属性 → 勾选**“离线支持”**；
+  不勾选时 TB 不会拉取/缓存 CalDAV 事件。
 - **会议附件只能填 URL**：TB 事件对话框前端限制（无本地文件入口），桥端
   文件附件（base64）已实现但不会被触发。
 - **接受邀请出现重复事件**：Exchange 2010 不通过标准字段给出 iCalendar UID；

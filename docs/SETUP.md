@@ -97,7 +97,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND \
 
 1. **Calendar → New Calendar → Network (CalDAV)**, URL:
    `http://127.0.0.1:17081/dav/you@your-company.com/exchange/`
-2. Subscribe; you can now browse/edit events. If it shows as read-only, see §9.
+2. Subscribe. Then **right-click the calendar → Properties → enable
+   "Offline Support"** — without it Thunderbird does not fetch/cache remote
+   events and the calendar stays empty. You can now browse/edit events.
+   If it shows as read-only, see §9.
 
 ## 6. Add the LDAP address book + compose autocomplete
 
@@ -138,6 +141,9 @@ systemctl --user enable --now check-ews-url.timer     # guard ews_url every 10 m
 - **Calendar always read-only**: ensure the bridge's `PROPFIND` advertises
   `current-user-privilege-set` with `write` (this repo does); Thunderbird only
   re-evaluates privileges while `readOnly=false`.
+- **Calendar shows no events**: right-click the calendar → Properties →
+  enable **"Offline Support"**. Thunderbird does not populate a CalDAV
+  calendar while it is off.
 - **Meeting attachments only accept URLs**: a Thunderbird event-dialog limitation
   (no local-file entry point); the bridge's file-attachment (base64) code exists
   but is never triggered.
