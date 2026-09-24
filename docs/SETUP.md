@@ -144,6 +144,18 @@ systemctl --user enable --now check-ews-url.timer     # guard ews_url every 10 m
 - **Calendar shows no events**: right-click the calendar → Properties →
   enable **"Offline Support"**. Thunderbird does not populate a CalDAV
   calendar while it is off.
+- **No signature when forwarding**: Thunderbird ships with this **off**.
+  Account Settings → your identity → **Composition & Addressing** → check
+  **"Include signature for forwards"** ("Include signature for replies" is
+  on by default).
+- **Signature lands below the quoted history** (reply/forward): same tab —
+  set the reply position to **"start my reply above the quote"** and
+  **"and place my signature"** → **"below my reply (above the quote)"**.
+- **No signature anywhere (even a new message)**: Account Settings → main
+  panel: make sure **Signature text** has content and you pressed OK. If
+  **"Attach the signature from a file instead"** is checked but the file
+  path is missing/invalid, Thunderbird silently ignores the text signature
+  too — uncheck it or fix the path.
 - **Meeting attachments only accept URLs**: a Thunderbird event-dialog limitation
   (no local-file entry point); the bridge's file-attachment (base64) code exists
   but is never triggered.
