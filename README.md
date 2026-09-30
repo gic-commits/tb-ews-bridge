@@ -68,7 +68,10 @@ retried once if the server still rejects them — so marking messages read/unrea
 works. Forwarded/replied messages that reference inline images via Thunderbird's
 private `x-moz-ews://` URLs are rewritten back to `cid:` and the image parts
 (recovered from `MimeContent` responses seen earlier) are re-attached as a
-`multipart/related` tree — recipients see the inline images.
+`multipart/related` tree — recipients see the inline images. If the upstream
+connection drops mid-upload (e.g. an occasional reset on a large forward), the
+bridge returns an explicit SOAP fault instead of relaying an interim `1xx`, so
+Thunderbird reports a send failure rather than hanging on "Sending message…".
 
 ### 3.2 Calendar (read + write)
 - **Read**: hierarchy discovery (principal → calendar-home → calendar),

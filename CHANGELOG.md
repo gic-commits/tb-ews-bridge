@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-30（M0 邮件桥：大邮件上传偶发卡死）
+
+### M0 修复 — 转发大附件邮件卡在「正在发送消息…」 ✅
+- **现象**：转发含多附件邮件（正文 ~24MB），TB 一直停在「正在发送消息…」不返回。
+- **根因**：上游偶发在请求体上传阶段断开连接，curl 仅收到中间态
+  `100 Continue`（`curl: (52) Empty reply from server`）；桥把该 1xx 当作
+  最终响应原样回给 TB，TB 于是永久等待永远不会到来的最终响应。
+- **修复**（`ews_bridge.py`）：
+  - `ews_via_curl`：curl 非零退出或响应码不在 2xx–5xx（如 1xx）时，一律按
+    网关错误处理：回一个 SOAP Fault（HTTP 502）而非把 `100` 转发给 TB →
+    TB 立即报「发送失败」，不再无限等待；`--max-time` 120→300，
+    新增 `--expect100-timeout 2`。
+  - 桥收到 TB 带 `Expect: 100-continue` 的请求头后立即应答
+    `HTTP/1.1 100 Continue`，避免客户端空等首包。
+- **验证**：合成 ~24MB `CreateItem` 直连上游与经桥均 HTTP 200；真机转发含
+  附件邮件发送成功（`SendOnly` + `SaveOnly` 两次 `CreateItem` 均 `NoError`）。
+  邮箱 `MaxMessageSize=100MB`，与邮件大小无关，属上游偶发断连。
+
 ## 2026-09-24（M0 邮件桥两处修复）
 
 ### M0 修复 — 点未读邮件不变已读（写操作缺 ChangeKey）✅

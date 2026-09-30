@@ -518,7 +518,8 @@ def ews_via_curl(path, body, req_headers):
     hpath = f"/tmp/ewsck/{tag}.h"
     bpath = f"/tmp/ewsck/{tag}.b"
     cmd = ["curl", "-sS", "--noproxy", "*", "--ntlm", "-u", f"{ARGS.user}:{ARGS.password}",
-           "--http1.1", "--connect-timeout", "15", "--max-time", "120",
+           "--http1.1", "--connect-timeout", "15", "--max-time", "300",
+           "--expect100-timeout", "2",
            "--resolve", f"{ARGS.host}:443:{ip}",
            "-D", hpath, "-o", bpath, "--write-out", "%{http_code}", "-X", "POST"]
     skip = HOP | {"host", "content-length", "authorization", "user-agent"}
@@ -528,7 +529,7 @@ def ews_via_curl(path, body, req_headers):
         cmd += ["-H", f"{k}: {v}"]
     cmd += ["--data-binary", "@-", f"https://{ARGS.host}{path}"]
     try:
-        p = subprocess.run(cmd, input=body, capture_output=True, timeout=150)
+        p = subprocess.run(cmd, input=body, capture_output=True, timeout=320)
     except Exception as e:
         return 502, [("Content-Type", "text/plain")], f"curl-err {e}".encode()
     try:
@@ -539,9 +540,6 @@ def ews_via_curl(path, body, req_headers):
         out_body = open(bpath, "rb").read()
     except Exception:
         out_body = b""
-    if p.returncode != 0:
-        log(f"CURL-RC {p.returncode} code={code} got={len(out_body)}B "
-            f"err={p.stderr.decode('utf-8','replace')[:300]}", LOG)
     out_headers = []
     try:
         with open(hpath) as fh:
@@ -551,6 +549,17 @@ def ews_via_curl(path, body, req_headers):
                     out_headers.append((k.strip(), v.strip()))
     except Exception:
         pass
+    if p.returncode != 0 or not (200 <= code < 600):
+        log(f"CURL-RC {p.returncode} code={code} got={len(out_body)}B "
+            f"err={p.stderr.decode('utf-8','replace')[:300]}", LOG)
+        code = 502
+        out_body = (b"<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+                    b"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+                    b"<s:Body><s:Fault><faultcode>s:Client</faultcode>"
+                    b"<faultstring>ews-bridge: upstream transport failure (curl "
+                    + str(p.returncode).encode() + b")</faultstring>"
+                    b"</s:Fault></s:Body></s:Envelope>")
+        out_headers = [("Content-Type", "text/xml; charset=utf-8")]
     for k, v in out_headers:
         if k.lower() == "content-length":
             try:
@@ -618,6 +627,12 @@ class Handler(socketserver.BaseRequestHandler):
                         req_headers.append((k, v))
                         if k.lower() == "content-length":
                             content_len = int(v)
+                    if any(k.lower() == "expect" and "100-continue" in v.lower()
+                           for k, v in req_headers):
+                        try:
+                            sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+                        except Exception:
+                            pass
                     if content_len > len(tail):
                         tail += read_body(sock, content_len - len(tail), False)
                     elif content_len < len(tail):

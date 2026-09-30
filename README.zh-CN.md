@@ -59,7 +59,9 @@ TB 以 Exchange(EWS) 账户接入，请求经 17080 桥转发；EWS `POST …/ex
 `GetItem(IdOnly)` 回取并缓存，被拒再强制刷新重试一次——点未读邮件可正常
 变已读。转发/回复中引用内联图片的 Thunderbird 私有 `x-moz-ews://` URL
 会被改写回 `cid:`，并把此前从 `MimeContent` 响应中缓存的图片部件重新挂成
-`multipart/related` 树——收件人可以看到内联图片。
+`multipart/related` 树——收件人可以看到内联图片。若上游在上传途中断开连接
+（例如大邮件转发时的偶发 reset），桥会返回明确的 SOAP 故障而不是把中间态
+`1xx` 转给 TB，从而让 Thunderbird 报「发送失败」而不是一直卡在「正在发送消息…」。
 
 ### 3.2 日历（读 + 写回）
 - **读**：层级发现（principal → calendar-home → calendar）、`calendar-multiget`、
