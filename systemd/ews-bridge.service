@@ -3,7 +3,7 @@ Description=EWS email bridge (NTLM passthrough for Thunderbird)
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 %h/bin/ews_bridge.py
+ExecStart=/usr/bin/python3 /opt/ews-bridge/ews-bridge.py
 Restart=on-failure
 RestartSec=3
 

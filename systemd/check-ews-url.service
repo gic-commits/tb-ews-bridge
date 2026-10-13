@@ -4,4 +4,4 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/bin/check-ews-url.sh
+ExecStart=/opt/ews-bridge/check-ews-url.sh

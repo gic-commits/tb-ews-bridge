@@ -3,10 +3,10 @@ Description=EWS CalDAV bridge (calendar for Thunderbird)
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 %h/bin/ewscaldav.py
+ExecStart=/usr/bin/python3 /opt/ews-bridge/ewscaldav.py
 Restart=on-failure
 RestartSec=3
-Environment=EWS_BRIDGE_PATH=%h/bin/ews_bridge.py
+Environment=EWS_BRIDGE_PATH=/opt/ews-bridge/ews-bridge.py
 
 [Install]
 WantedBy=default.target

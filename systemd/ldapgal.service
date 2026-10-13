@@ -3,10 +3,10 @@ Description=Read-only LDAP GAL bridge (Thunderbird address book)
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 %h/bin/ldapgal.py
+ExecStart=/usr/bin/python3 /opt/ews-bridge/ldapgal.py
 Restart=on-failure
 RestartSec=3
-Environment=EWS_BRIDGE_PATH=%h/bin/ews_bridge.py
+Environment=EWS_BRIDGE_PATH=/opt/ews-bridge/ews-bridge.py
 Environment=LDAP_BASE_DN=dc=example,dc=com
 
 [Install]
