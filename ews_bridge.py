@@ -519,7 +519,7 @@ def ews_via_curl(path, body, req_headers):
     bpath = f"/tmp/ewsck/{tag}.b"
     cmd = ["curl", "-sS", "--noproxy", "*", "--ntlm", "-u", f"{ARGS.user}:{ARGS.password}",
            "--http1.1", "--connect-timeout", "15", "--max-time", "300",
-           "--expect100-timeout", "2",
+           "--keepalive-time", "30",
            "--resolve", f"{ARGS.host}:443:{ip}",
            "-D", hpath, "-o", bpath, "--write-out", "%{http_code}", "-X", "POST"]
     skip = HOP | {"host", "content-length", "authorization", "user-agent"}
@@ -660,6 +660,12 @@ class Handler(socketserver.BaseRequestHandler):
                         log(f"<- {method} {path} body={len(body)}B auth={_authhdr()}{' ' + auth_info if auth_info else ''}", LOG)
                     if path.lower().endswith("exchange.asmx") and method in ("POST",):
                         code, out_headers, out_body = ews_via_curl(path, body, req_headers)
+                        # Transport-failure retry for GetItem (large MIME downloads)
+                        op = re.search(rb"Body[^>]*>\s*<(?:[^:>]+:)?([A-Za-z]+)", body[:800])
+                        op = op.group(1).decode() if op else "-"
+                        if op == "GetItem" and (out_body.startswith(b"<?xml") and b"curl 18" in out_body or b"ErrorTimeoutExpired" in out_body):
+                            log(f"TRANSPORT-RETRY GetItem curl18/timeout", LOG)
+                            code, out_headers, out_body = ews_via_curl(path, body, req_headers)
                         if code < 400 and any(e in out_body for e in CK_ERRS):
                             ids = body_item_ids(body)
                             for i in ids:
