@@ -5,9 +5,11 @@
 让 **Thunderbird（含 snap 版）** 在不依赖任何第三方插件的前提下，接入企业
 **Exchange 2010** 服务：
 
-- **邮件** —— 经本地 EWS 中继（兼容老服务器）；
+- **邮件** —— 经 **IMAP/SMTP 原生协议** (993/587)，替代原 EWS 中继，支持 IDLE 推送与标准轮询；
 - **日历** —— 自研 **CalDAV 服务端**桥接，支持只读 + 写回（建/改/删、会议邀请）；
 - **通讯录（GAL）** —— 自研 **只读 LDAP 服务端**桥接，供写信时自动补全。
+
+> 原 EWS 邮件桥 (`ews_bridge.py`:17080) 已停用，代码保留备用，详见 [IMAP 迁移指南](docs/MIGRATION-IMAP.md)。
 
 > 设计见 [docs/DESIGN.md](docs/DESIGN.md)，变更见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -32,7 +34,7 @@
 - **日历 / 通讯录**：改用 Thunderbird 原生支持的 **CalDAV / LDAP**，由桥翻译为 EWS。
 
 ```
-Thunderbird ──(原生 EWS   :17080)──> ews_bridge.py ──(NTLM)──> mail.example.com:443 EWS
+Thunderbird ──(IMAP/SMTP :993/587)──> mail.example.com:993/587
 Thunderbird ──(原生 CalDAV:17081)──> ewscaldav.py   ──┘
 Thunderbird ──(原生 LDAP  :17089)──> ldapgal.py     ──┘
 ```
@@ -43,11 +45,12 @@ Thunderbird ──(原生 LDAP  :17089)──> ldapgal.py     ──┘
 
 | 文件 | 端口 | 说明 |
 |---|---|---|
-| `ews_bridge.py` | 17080 | EWS 中继：NTLM 握手（交给 `curl --ntlm`）、请求体重写、写操作 ChangeKey 注入、转发/回复内联图片修复、自带 DNS、EWS 操作级日志 |
 | `ewscaldav.py` | 17081 | CalDAV 服务端：PROPFIND / REPORT（multiget、calendar-query）/ GET / PUT / DELETE；EWS `FindItem`+`CalendarView` → ICS；UID↔ItemId/ChangeKey 落 SQLite；写回 `CreateItem`/`UpdateItem`/`DeleteItem` |
 | `ldapgal.py` | 17089 | 只读 LDAP v3（Bind/Search，BER 最小编解码）：过滤器抽取 → EWS `ResolveNames`（GAL），90s 缓存，单次 ≤50 条 |
 | `check-ews-url.sh` | - | EWS 桥地址守卫：校验/恢复 TB 的 `ews_url` 指向本机桥（配 10min systemd timer） |
 | `tests/` | - | 自测：EWS 联系人/ResolveNames 探测、LDAP Bind+Search smoke test |
+
+> **注意**：`ews_bridge.py` (17080) 已停用，代码保留备用。邮件功能已迁移至 IMAP/SMTP 原生协议，详见 [IMAP 迁移指南](docs/MIGRATION-IMAP.md)。
 
 ## 3. 功能现状
 
@@ -119,9 +122,11 @@ systemd 用户单元模板见 `systemd/`。
 
 ### 4.3 Thunderbird 侧配置
 
-1. **邮箱**：新建 Exchange(EWS) 账户，把 `ews_url` 指向
-   `http://127.0.0.1:17080/ews/exchange.asmx`（该值不在 UI，可用
-   `check-ews-url.sh` 守护）。
+1. **邮箱**：新建 **IMAP** 账户
+   - 服务器：`mail.example.com`，端口：`993`，SSL/TLS，普通密码
+   - SMTP：`mail.example.com:587`，STARTTLS，普通密码
+   - 详细配置见 [IMAP 迁移指南](docs/MIGRATION-IMAP.md)
+
 2. **日历** → 新建日历 → 网络日历（CalDAV），URL：
    `http://127.0.0.1:17081/dav/you@your-company.com/exchange/`
 3. **地址簿** → 新建 → LDAP 目录：Host `127.0.0.1`、Port `17089`、
@@ -138,26 +143,20 @@ TB_PROFILE=~/.thunderbird/<profile> ./check-ews-url.sh -n   # 仅检查（dry ru
 systemctl --user enable --now check-ews-url.timer           # 每 10 分钟巡检
 ```
 
-### 4.5 端口及如何修改
+### 4.4 端口及如何修改
 
 默认端口（均绑定 `127.0.0.1`，非特权端口）：
 
 | 服务 | 默认端口 | 配置位置 |
 |---|---|---|
-| 邮件 EWS 中继（`ews_bridge.py`） | `17080` | `cred.json` → `lport`（或 `--lport`） |
 | 日历 CalDAV（`ewscaldav.py`） | `17081` | `--port N`（默认 `17081`；在 systemd `ExecStart` 里加参数） |
 | 通讯录 LDAP（`ldapgal.py`） | `17089` | 命令行参数（`ldapgal.py N`）或 `cred.json` → `ldap_port` |
 
 要改端口，需**同步**修改以下几处：
 
-1. 上面的服务配置（以及对应的 `systemd/*.service` 的 `ExecStart`：
-   `ewscaldav`/`ldapgal` 加参数；`ews_bridge` 读 `cred.json` 的 `lport`）。
-2. `check-ews-url.sh` 的 `BRIDGE_URL`（及其 `server_versions` 匹配字面量）——
-   仅当改了邮件端口时。
-3. Thunderbird 侧（改 `prefs.js`，或在账户/日历/地址簿对话框里改）：
-   - `mail.server.*.ews_url`、`mail.outgoingserver.*.ews_url` →
-     `http://127.0.0.1:<邮件端口>/ews/exchange.asmx`
-   - `mail.ews.server_versions`（JSON 键）
+1. 对应的 `systemd/*.service` 的 `ExecStart`：
+   `ewscaldav`/`ldapgal` 加参数。
+2. Thunderbird 侧（改 `prefs.js`，或在账户/日历/地址簿对话框里改）：
    - `calendar.registry.<id>.uri` →
      `http://127.0.0.1:<日历端口>/dav/<用户>/exchange/`
    - `ldap_2.servers.<name>.uri` →
