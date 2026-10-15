@@ -21,11 +21,11 @@ Thunderbird 原生 EWS 账户存在以下已知缺陷：
 └─────────────────────┴─────────────────────┴─────────────────┘
          │                     │                    │
          ▼                     ▼                    ▼
-    mail.maipu.com:993    ewscaldav.py:17081    ldapgal.py:17089
+    mail.example.com:993    ewscaldav.py:17081    ldapgal.py:17089
          │                     │                    │
          └─────────────────────┼────────────────────┘
                                ▼
-                    Exchange 2010 (mail.maipu.com)
+                    Exchange 2010 (mail.example.com)
 ```
 
 ### 组件职责分离
@@ -45,11 +45,11 @@ Thunderbird 原生 EWS 账户存在以下已知缺陷：
 
 ```
 账户类型: IMAP
-服务器: mail.maipu.com
+服务器: mail.example.com
 端口: 993
 连接安全性: SSL/TLS
 认证方式: 普通密码
-用户名: fuqingqiu@mail.maipu.com (完整邮箱)
+用户名: your-email@mail.example.com (完整邮箱)
 密码: 您的密码
 ```
 
@@ -57,11 +57,11 @@ Thunderbird 原生 EWS 账户存在以下已知缺陷：
 
 | 设置 | 值 | 说明 |
 |------|------|------|
-| 服务器 | mail.maipu.com | |
+| 服务器 | mail.example.com | |
 | 端口 | 587 | STARTTLS 标准端口 |
 | 连接安全性 | STARTTLS | 不是 SSL/TLS |
 | 认证方式 | 普通密码 | 不是 NTLM，不是加密密码 |
-| 用户名 | fuqingqiu@mail.maipu.com | 完整邮箱 |
+| 用户名 | your-email@mail.example.com | 完整邮箱 |
 | 密码 | 您的密码 | |
 
 **关键点**: Exchange 支持 `AUTH LOGIN` (普通密码)，不需要 NTLM。Thunderbird 默认的"普通密码"即 `AUTH LOGIN`，完全兼容。
@@ -82,8 +82,8 @@ Thunderbird 配置中的文件夹名称使用 IMAP Modified UTF-7 编码（中�
 ```
 工具 → 选项 → 常规 → 配置编辑器 → 我接受风险
 搜索并修改：
-mail.identity.id2.fcc_folder = imap://fuqingqiu%40mail.maipu.com@mail.maipu.com/Sent
-mail.identity.id2.draft_folder = imap://fuqingqiu%40mail.maipu.com@mail.maipu.com/Drafts
+mail.identity.id2.fcc_folder = imap://your-email%40mail.example.com@mail.example.com/Sent
+mail.identity.id2.draft_folder = imap://your-email%40mail.example.com@mail.example.com/Drafts
 ```
 
 #### 方法 2: 账户设置界面 (推荐新手)
@@ -98,8 +98,8 @@ mail.identity.id2.draft_folder = imap://fuqingqiu%40mail.maipu.com@mail.maipu.co
 
 ```bash
 # 关闭 TB 后修改 prefs.js
-sed -i 's|imap://.*/&XfJT0ZABkK5O9g-|imap://fuqingqiu%40mail.maipu.com@mail.maipu.com/Sent|g' prefs.js
-sed -i 's|imap://.*/&g0l6Pw-|imap://fuqingqiu%40mail.maipu.com@mail.maipu.com/Drafts|g' prefs.js
+sed -i 's|imap://.*/&XfJT0ZABkK5O9g-|imap://your-email%40mail.example.com@mail.example.com/Sent|g' prefs.js
+sed -i 's|imap://.*/&g0l6Pw-|imap://your-email%40mail.example.com@mail.example.com/Drafts|g' prefs.js
 ```
 
 ### 文件夹映射对照表
@@ -122,11 +122,11 @@ sed -i 's|imap://.*/&g0l6Pw-|imap://fuqingqiu%40mail.maipu.com@mail.maipu.com/Dr
 
 | 设置 | 值 | 说明 |
 |------|------|------|
-| 服务器 | mail.maipu.com | |
+| 服务器 | mail.example.com | |
 | 端口 | **587** | STARTTLS 标准端口 |
 | 连接安全性 | **STARTTLS** | 不是 SSL/TLS |
 | **认证方式** | **普通密码** | **不是 NTLM** |
-| 用户名 | fuqingqiu@mail.maipu.com | 完整邮箱 |
+| 用户名 | your-email@mail.example.com | 完整邮箱 |
 | 密码 | 您的密码 | |
 
 ### 关键发现
@@ -248,19 +248,19 @@ systemctl --user enable --now ews-bridge
 ### prefs.js 关键配置
 ```javascript
 // 发件箱
-user_pref("mail.identity.id2.fcc_folder", "imap://fuqingqiu%40mail.maipu.com@mail.maipu.com/Sent");
+user_pref("mail.identity.id2.fcc_folder", "imap://your-email%40mail.example.com@mail.example.com/Sent");
 user_pref("mail.identity.id2.fcc_folder_picker_mode", 1);
 
 // 草稿箱
-user_pref("mail.identity.id2.draft_folder", "imap://fuqingqiu%40mail.maipu.com@mail.maipu.com/Drafts");
+user_pref("mail.identity.id2.draft_folder", "imap://your-email%40mail.example.com@mail.example.com/Drafts");
 user_pref("mail.identity.id2.drafts_folder_picker_mode", 1);
 
 // SMTP
 user_pref("mail.smtpserver.smtp1.authMethod", 3);  // 3 = 普通密码
-user_pref("mail.smtpserver.smtp1.hostname", "mail.maipu.com");
+user_pref("mail.smtpserver.smtp1.hostname", "mail.example.com");
 user_pref("mail.smtpserver.smtp1.port", 587);
 user_pref("mail.smtpserver.smtp1.try_ssl", 2);  // 2 = STARTTLS
-user_pref("mail.smtpserver.smtp1.username", "fuqingqiu@mail.maipu.com");
+user_pref("mail.smtpserver.smtp1.username", "your-email@mail.example.com");
 
 // 自动检查
 user_pref("mail.server.server2.check_new_mail", true);

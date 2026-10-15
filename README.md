@@ -5,13 +5,13 @@
 Use an enterprise **Exchange 2010** service from **Thunderbird** (including the
 snap build) with **no third-party add-ons**:
 
-- **Mail** — via a local EWS relay that works around the legacy server;
+- **Mail** — via native **IMAP/SMTP** (993/587), replacing the EWS relay;
 - **Calendar** — via a self-hosted **CalDAV server** bridge (read + write,
   meeting invitations);
 - **Address book (GAL)** — via a self-hosted read-only **LDAP server** bridge
   for compose-time autocomplete.
 
-> Design: [docs/DESIGN.md](docs/DESIGN.md) ｜ Changes: [CHANGELOG.md](CHANGELOG.md)
+> Design: [docs/DESIGN.md](docs/DESIGN.md) ｜ Changes: [CHANGELOG.md](CHANGELOG.md) ｜ IMAP Migration: [docs/MIGRATION-IMAP.md](docs/MIGRATION-IMAP.md)
 
 ---
 
@@ -31,16 +31,14 @@ EWS calendar/contacts provider (calendar has only CalDav/ICS, etc.).
 
 This project therefore adds a **local compatibility / translation bridge**:
 
-- **Mail**: Thunderbird's native EWS points at the local bridge; the bridge
-  performs the **NTLM handshake** and **rewrites requests** to accommodate the
-  legacy server (a compatibility shim, not a protocol translation).
-- **Calendar / Contacts**: switched to Thunderbird-native **CalDAV / LDAP**,
-  translated to EWS by the bridge.
+- **Mail**: Thunderbird uses native **IMAP/SMTP** (993/587) — no bridge needed.
+  The old EWS relay (`ews_bridge.py:17080`) is disabled; code retained for reference.
+- **Calendar / Contacts**: Thunderbird native **CalDAV / LDAP**, translated to EWS by the bridge.
 
 ```
-Thunderbird ──(native EWS    :17080)──> ews_bridge.py ──(NTLM)──> mail.example.com:443 EWS
-Thunderbird ──(native CalDAV :17081)──> ewscaldav.py   ──┘
-Thunderbird ──(native LDAP   :17089)──> ldapgal.py     ──┘
+Thunderbird ──(IMAP/SMTP :993/587)──> mail.example.com:993/587
+Thunderbird ──(原生 CalDAV:17081)──> ewscaldav.py   ──┘
+Thunderbird ──(原生 LDAP  :17089)──> ldapgal.py     ──┘
 ```
 
 Core principle: **zero add-ons on the TB side, native protocols only; all
@@ -50,28 +48,20 @@ EWS-specific knowledge and compatibility handling live in the local bridge.**
 
 | File | Port | Description |
 |---|---|---|
-| `ews_bridge.py` | 17080 | EWS relay: NTLM handshake (delegated to `curl --ntlm`), request-body rewrite, ChangeKey injection for writes, inline-image repair on forward/reply, built-in DNS, per-operation EWS logging |
 | `ewscaldav.py` | 17081 | CalDAV server: PROPFIND / REPORT (multiget, calendar-query) / GET / PUT / DELETE; EWS `FindItem`+`CalendarView` → ICS; UID↔ItemId/ChangeKey in SQLite; write-back via `CreateItem`/`UpdateItem`/`DeleteItem` |
 | `ldapgal.py` | 17089 | Read-only LDAP v3 (Bind/Search, minimal BER codec): filter extraction → EWS `ResolveNames` (GAL), 90s cache, ≤50 entries per query |
 | `check-ews-url.sh` | - | EWS bridge URL guard: verifies/restores TB's `ews_url` to the local bridge (with a 10-min systemd timer) |
 | `tests/` | - | Self-tests: EWS contacts/ResolveNames probing, LDAP Bind+Search smoke test |
 
+> **Note**: `ews_bridge.py` (17080) is **disabled**; code retained for reference. Mail now uses native IMAP/SMTP. See [IMAP Migration Guide](docs/MIGRATION-IMAP.md).
+
 ## 3. Status
 
-### 3.1 Mail
-Thunderbird connects as an Exchange (EWS) account through the 17080 bridge;
-`POST …/exchange.asmx` uses `curl --ntlm`. Request rewriting works around EWS
-2010's read-only validation (`ErrorChangeKeyRequiredForWriteOperations`).
-Write operations (`UpdateItem`/`DeleteItem`/…) get **ChangeKey injection**:
-missing ChangeKeys are fetched with a batch `GetItem(IdOnly)`, cached, and
-retried once if the server still rejects them — so marking messages read/unread
-works. Forwarded/replied messages that reference inline images via Thunderbird's
-private `x-moz-ews://` URLs are rewritten back to `cid:` and the image parts
-(recovered from `MimeContent` responses seen earlier) are re-attached as a
-`multipart/related` tree — recipients see the inline images. If the upstream
-connection drops mid-upload (e.g. an occasional reset on a large forward), the
-bridge returns an explicit SOAP fault instead of relaying an interim `1xx`, so
-Thunderbird reports a send failure rather than hanging on "Sending message…".
+### 3.1 Mail (IMAP/SMTP)
+Thunderbird connects via native **IMAP (993, SSL/TLS)** and **SMTP (587, STARTTLS)**.
+The old EWS relay (`ews_bridge.py:17080`) is **disabled**; code retained for reference.
+IMAP provides native IDLE push + 3-minute polling; SMTP uses port 587 with
+STARTTLS and `AUTH LOGIN` (plain password) — no NTLM required.
 
 ### 3.2 Calendar (read + write)
 - **Read**: hierarchy discovery (principal → calendar-home → calendar),
@@ -95,8 +85,8 @@ takes the longest search term → `ResolveNames`.
 
 ## 4. Quick Start
 
-> For a detailed, from-scratch walkthrough (install Thunderbird, create the EWS
-> account, point `ews_url` at the bridge, run as services), see
+> For a detailed, from-scratch walkthrough (install Thunderbird, create the IMAP
+> account, point CalDAV/LDAP at the bridge, run as services), see
 > [docs/SETUP.md](docs/SETUP.md).
 
 ### 4.1 Credentials (never in source)
@@ -126,56 +116,46 @@ chmod 600 ~/.config/ews-bridge/cred.json
 ### 4.2 Run the services
 
 ```bash
-python3 ews_bridge.py                 # EWS relay (17080)
 python3 ewscaldav.py                  # CalDAV calendar (17081)
 python3 ldapgal.py 17089               # LDAP address book (17089)
+# ews_bridge.py is DISABLED — mail uses native IMAP/SMTP
 ```
 
 systemd user-unit templates are in `systemd/`.
 
 ### 4.3 Thunderbird setup
 
-1. **Mail**: create an Exchange (EWS) account and point `ews_url` at
-   `http://127.0.0.1:17080/ews/exchange.asmx` (this value is not in the UI; use
-   `check-ews-url.sh` to keep it guarded).
+1. **Mail**: create an **IMAP** account
+   - Server: `mail.example.com`, Port: `993`, SSL/TLS, Normal password
+   - SMTP: `mail.example.com:587`, STARTTLS, Normal password
+   - Detailed config: see [IMAP Migration Guide](docs/MIGRATION-IMAP.md)
+
 2. **Calendar** → New Calendar → Network Calendar (CalDAV), URL:
    `http://127.0.0.1:17081/dav/you@your-company.com/exchange/`
+
 3. **Address book** → New → LDAP Directory: Host `127.0.0.1`, Port `17089`,
    Base DN `dc=example,dc=com` (enable "search in address book when composing").
-4. **Compose autocomplete** → Settings → Composition → Addressing: change
+
+5. **Compose autocomplete** → Settings → Composition → Addressing: change
    **Directory Server** from `None` to that LDAP directory (equivalently, in
    about:config set `ldap_2.autoComplete.useDirectory=true` and
    `ldap_2.autoComplete.directoryServer=…`).
 
-### 4.4 Guarding the EWS bridge URL (optional)
-
-```bash
-TB_PROFILE=~/.thunderbird/<profile> ./check-ews-url.sh      # check/restore
-TB_PROFILE=~/.thunderbird/<profile> ./check-ews-url.sh -n   # check only (dry run)
-systemctl --user enable --now check-ews-url.timer           # run every 10 min
-```
-
-### 4.5 Ports and how to change them
+### 4.2 Ports and how to change them
 
 Defaults (all bind `127.0.0.1`, non-privileged):
 
 | Service | Default port | Where it is configured |
 |---|---|---|
-| Mail EWS relay (`ews_bridge.py`) | `17080` | `cred.json` → `lport` (or `--lport`) |
 | Calendar CalDAV (`ewscaldav.py`) | `17081` | `--port N` (default `17081`; add it to the systemd `ExecStart`) |
 | Address book LDAP (`ldapgal.py`) | `17089` | CLI argument (`ldapgal.py N`) or `cred.json` → `ldap_port` |
 
 To change any port, update **all** of the following consistently:
 
 1. The service config above (and the matching `systemd/*.service` `ExecStart` for
-   `ewscaldav` / `ldapgal`; `ews_bridge` reads `lport` from `cred.json`).
-2. `check-ews-url.sh` → `BRIDGE_URL` (and its `server_versions` grep literal) —
-   only if you change the mail port.
-3. Thunderbird side (in `prefs.js`, or via the account / calendar / address-book
+   `ewscaldav` / `ldapgal`).
+2. Thunderbird side (in `prefs.js`, or via the account / calendar / address-book
    dialogs):
-   - `mail.server.*.ews_url`, `mail.outgoingserver.*.ews_url` →
-     `http://127.0.0.1:<mail port>/ews/exchange.asmx`
-   - `mail.ews.server_versions` (JSON key)
    - `calendar.registry.<id>.uri` →
      `http://127.0.0.1:<caldav port>/dav/<user>/exchange/`
    - `ldap_2.servers.<name>.uri` →
@@ -187,11 +167,7 @@ overwritten on exit.
 ## 5. Known Limitations
 
 - **Calendar attachments: TB's front-end is incomplete.** The event dialog's
-  attachment menu only offers "URL" (`chrome/calendar/content/
-  calendar-event-dialog.xhtml` has only `cmd_attach_url`, plus a disabled
-  `cmd_attach_cloud` placeholder). Local-file attachments therefore cannot be
-  added in TB; the bridge's file-attachment (base64) code is kept but not
-  triggered by TB. It will work once upstream completes the UI.
+  attachment menu only offers "URL" (`chrome/calendar/content/calendar-event-dialog.xhtml` has only `cmd_attach_url`, plus a disabled `cmd_attach_cloud` placeholder). Local-file attachments therefore cannot be added in TB; the bridge's file-attachment (base64) code is kept but not triggered by TB. It will work once upstream completes the UI.
 - **Duplicate events from accepted invitations**: Exchange 2010 calendar items
   do not expose an iCalendar UID via the standard fields, so the bridge assigns
   each event a random UUID; when the user *accepts* an invitation from mail, TB
@@ -218,22 +194,22 @@ overwritten on exit.
   `UpdateItem` FieldURIs are namespaced (`item:*` vs `calendar:*`); writes
   require a `ChangeKey`; an empty `OptionalAttendees` triggers
   `ErrorSchemaValidation`.
-- **`FindItem` returns no Body/structured attendees**: bodies are filled via a
+- `FindItem` returns no Body/structured attendees: bodies are filled via a
   batch `GetItem(IdOnly+item:Body)`, attendees come from the local mapping
   store — avoiding per-event `GetItem` that would slow down sync.
 - **Credential safety**: the password lives only in
   `~/.config/ews-bridge/cred.json` (mode 600).
 
-## 7. Roadmap
+## 6. Roadmap
 
 ### Done
 
-- **M0 Mail bridge**: Thunderbird's native EWS requests are relayed by the local
-  bridge, which performs the NTLM handshake and rewrites request bodies
-  (`archive`→`inbox`, drops `InternetMessageId`) to satisfy EWS 2010, injects
-  missing ChangeKeys for write operations, repairs inline images on
+- **M0 Mail bridge**: Thunderbird's native EWS requests were relayed by the local
+  bridge, which performed the NTLM handshake and rewrote request bodies
+  (`archive`→`inbox`, drops `InternetMessageId`) to satisfy EWS 2010, injected
+  missing ChangeKeys for write operations, repaired inline images on
   forward/reply (`x-moz-ews://` → `cid:` + `multipart/related`), with
-  per-operation logging.
+  per-operation logging. **Now replaced by native IMAP/SMTP.**
 - **M1 Read-only calendar**: CalDAV discovery (OPTIONS/PROPFIND hierarchy),
   `calendar-multiget`, `calendar-query(time-range)`, single/full GET; EWS
   `FindItem+CalendarView` (±180 days, ≤1200) → ICS; `uid ↔ ItemId/ChangeKey`

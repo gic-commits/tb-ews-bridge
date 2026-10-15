@@ -30,7 +30,7 @@ systemctl --user start check-ews-url.service
 
 **逻辑**：
 - `pre/*`：`systemctl --user stop ews-bridge ewscaldav ldapgal`
-- `post/*`：等待网络可达（最长 10s，双探测：`8.8.8.8:53` + `mail.maipu.com:443`）→ `systemctl --user start` 同三服务
+- `post/*`：等待网络可达（最长 10s，双探测：`8.8.8.8:53` + `mail.example.com:443`）→ `systemctl --user start` 同三服务
 
 **日志**：`/var/log/user-bridges-sleep.log`（含时间戳）
 
