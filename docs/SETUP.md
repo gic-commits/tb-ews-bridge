@@ -2,174 +2,259 @@
 
 > 中文：[SETUP.zh-CN.md](SETUP.zh-CN.md)
 
-This walks through, in order: installing Thunderbird → deploying the local
-bridge → creating an Exchange (EWS) account → pointing it at the bridge → adding
-calendar / address book → running as services with a guard.
+This guide is written for **new colleagues (and their AI agents)**. Following the
+steps below on a **fresh Linux machine** should be enough to deploy and configure
+the full "Thunderbird ↔ Exchange 2010" integration.
+
+## Current architecture (important)
+
+**Mail uses native IMAP/SMTP; calendar/contacts use local bridges**:
+
+| Function | Protocol / port | Notes |
+|----------|-----------------|-------|
+| Mail (receive) | IMAP `993` (SSL/TLS) | Thunderbird native, no bridge |
+| Mail (send) | SMTP `587` (STARTTLS) | Thunderbird native, no bridge |
+| Calendar | CalDAV `17081` | local bridge `ewscaldav.py` → EWS |
+| Contacts | LDAP `17089` | local bridge `ldapgal.py` → EWS |
+
+> The legacy EWS mail bridge (`ews_bridge.py:17080`) is **disabled**; its code is
+> kept for reference only. For migrating from the old EWS mode, see
+> [MIGRATION-IMAP.md](MIGRATION-IMAP.md).
+
+---
 
 ## 0. Prerequisites
 
-- A Linux desktop (verified on Kylin/ARM aarch64; x86_64 works too).
-- **Python 3.8+** (standard library only, no pip dependencies) and **`curl`**.
-- An **Exchange 2010** account (mailbox + password) with EWS available:
-  - `https://<exchange-host>/EWS/Exchange.asmx` is reachable (returns 401 when
-    unauthenticated);
-  - you can sign in to `https://<exchange-host>/owa/` in a browser.
-- Internal DNS resolution for `<exchange-host>`.
+- Linux desktop (Kylin / Ubuntu / others; ARM aarch64 and x86_64 both verified).
+- **Python 3.8+** (stdlib only, no pip deps) and **`curl`**.
+- An **Exchange 2010** account (mailbox + password) with:
+  - IMAP/SMTP available (`mail.example.com:993` / `mail.example.com:587`);
+  - browser sign-in at `https://mail.example.com/owa/`;
+  - internal DNS resolving `mail.example.com`.
+
+> **Key fact**: Exchange 2010 is a legacy server (IIS 7.5) that only supports
+> **TLS 1.0**. This makes modern Thunderbird fail to connect — see §5 "TLS version".
+
+---
 
 ## 1. Install Thunderbird
 
-- snap: `sudo snap install thunderbird`
-- or distro package: `sudo apt install thunderbird`
-- or download from the official site.
+```bash
+sudo snap install thunderbird        # or: sudo apt install thunderbird
+```
 
-**Version requirement**: native Exchange (EWS) **mail** support. Check by whether
-an "Exchange" account type is offered, or whether `about:config` has `ews` keys.
-Older Thunderbird builds lack it.
+**Version requirement**: native **CalDAV / LDAP** account types (any modern TB).
 
-> Note: native EWS covers **mail only**; there is no EWS calendar/contacts
-> provider, which is why this project bridges them via CalDAV / LDAP.
+> No third-party add-ons needed. Mail uses native IMAP/SMTP; calendar/contacts use
+> native CalDAV/LDAP.
 
-## 2. Deploy the local bridge
+---
+
+## 2. Deploy the local bridges (calendar + contacts)
+
+### 2.1 Clone and deploy to a stable path
+
+> **Important**: scripts must live in a path the OS won't clean up (e.g.
+> `/opt/ews-bridge/`), **not** `~/bin` (which was wiped once by a system upgrade).
 
 ```bash
-git clone https://github.com/<you>/tb-ews-bridge.git
+git clone https://github.com/<your-org>/tb-ews-bridge.git
 cd tb-ews-bridge
 
-mkdir -p ~/bin ~/.config/ews-bridge
-cp ews_bridge.py ewscaldav.py ldapgal.py check-ews-url.sh ~/bin/
-chmod +x ~/bin/check-ews-url.sh
+sudo mkdir -p /opt/ews-bridge
+sudo cp ewscaldav.py ldapgal.py ews_bridge.py /opt/ews-bridge/
+sudo chmod +x /opt/ews-bridge/*.py
+sudo chown -R $(whoami):$(whoami) /opt/ews-bridge
+```
 
+> `ewscaldav.py` / `ldapgal.py` `import ews_bridge.py` (to reuse its EWS channel),
+> so `ews_bridge.py` must be deployed too (even if not run as a service).
+
+### 2.2 Configure credentials
+
+```bash
+mkdir -p ~/.config/ews-bridge
 cp cred.json.example ~/.config/ews-bridge/cred.json
-$EDITOR ~/.config/ews-bridge/cred.json      # fill in real values (table below)
+$EDITOR ~/.config/ews-bridge/cred.json    # fill in real values
 chmod 600 ~/.config/ews-bridge/cred.json
 ```
 
 `cred.json` fields:
 
 | Field | Meaning |
-|---|---|
-| `host` / `port` / `sni` | Exchange hostname, 443, SNI (usually the same host) |
-| `user` / `password` | Domain account (UPN, e.g. `you@your-company.com`) and password |
-| `lport` | Local mail EWS bridge port, default `17080` |
+|-------|---------|
+| `host` / `port` / `sni` | Exchange hostname, 443, SNI (usually same host) |
+| `user` / `password` | Domain account (UPN, e.g. `you@example.com`) and password |
+| `listen` / `log` | Bind address `127.0.0.1` / log file |
 | `ldap_port` | LDAP bridge port, default `17089` |
 | `ldap_base` | GAL Base DN, e.g. `dc=example,dc=com` |
-| `listen` / `log` | Bind address (`127.0.0.1`) / log file |
 
-## 3. Start and self-check
+> `cred.json` is git-ignored — never commit it.
 
-```bash
-python3 ~/bin/ews_bridge.py      # mail EWS relay  17080
-python3 ~/bin/ewscaldav.py       # CalDAV calendar 17081
-python3 ~/bin/ldapgal.py         # LDAP address book 17089
-```
-
-In another terminal:
-
-```bash
-ss -ltn | grep -E '17080|17081|17089'          # three ports listening
-curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND \
-  -H 'Depth: 0' --data '<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>' \
-  http://127.0.0.1:17081/dav/you@your-company.com/exchange/   # expect 207
-```
-
-## 4. Thunderbird: create the Exchange (EWS) mail account
-
-1. **Account Settings → New → Mail**, enter name, email address, password,
-   continue.
-2. Thunderbird will try **Autodiscover**. Against a legacy Exchange 2010 this may
-   fail or point at the real domain; if so, configure **manually**:
-   - account type **Exchange (EWS)**;
-   - server = the real `host`, username = UPN, port 443 + SSL.
-3. **Key step — point `ews_url` at the local bridge** (not exposed in the UI, so
-   edit the config):
-   - **Fully quit Thunderbird** (confirm `pgrep thunderbird` prints nothing);
-   - edit `~/.thunderbird/<profile>/prefs.js` (e.g. `xxxx.default-release`):
-     - `mail.server.serverN.ews_url` → `http://127.0.0.1:17080/ews/exchange.asmx`
-     - `mail.outgoingserver.ewsN.ews_url` → the same
-   - Reopen Thunderbird; if you can send/receive, it worked.
-4. Use the `check-ews-url.timer` from `<repo>/systemd/` to guard this value
-   against being reverted to the real domain (see §7).
-
-> The local bridge performs the **NTLM handshake + request rewriting** to suit
-> EWS 2010; on the Thunderbird side it is still its own native EWS.
-
-## 5. Add the CalDAV calendar
-
-1. **Calendar → New Calendar → Network (CalDAV)**, URL:
-   `http://127.0.0.1:17081/dav/you@your-company.com/exchange/`
-2. Subscribe. Then **right-click the calendar → Properties → enable
-   "Offline Support"** — without it Thunderbird does not fetch/cache remote
-   events and the calendar stays empty. You can now browse/edit events.
-   If it shows as read-only, see §9.
-
-## 6. Add the LDAP address book + compose autocomplete
-
-1. **Address Book → New → LDAP Directory**:
-   - Host `127.0.0.1`, Port `17089`, Base DN `dc=example,dc=com`;
-   - enable "search in address book when composing".
-2. **Compose autocomplete**: Settings → Composition → Addressing, change
-   **Directory Server** from `None` to that LDAP directory (equivalently, in
-   about:config set `ldap_2.autoComplete.useDirectory=true` and
-   `ldap_2.autoComplete.directoryServer=ldap_2.servers.<name>`).
-
-## 7. Run as services (systemd --user, autostart)
+### 2.3 Configure systemd user services
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp systemd/*.service systemd/*.timer ~/.config/systemd/user/
+cp systemd/ewscaldav.service systemd/ldapgal.service ~/.config/systemd/user/
+
+# ensure ExecStart points at /opt/ews-bridge/ (the repo template already does)
 systemctl --user daemon-reload
-systemctl --user enable --now ews-bridge.service ewscaldav.service ldapgal.service
-systemctl --user enable --now check-ews-url.timer     # guard ews_url every 10 min
+systemctl --user enable --now ewscaldav.service ldapgal.service
 ```
 
-> Templates use `%h/bin/...`, matching `~/bin` from §2. If you changed ports, add
-> the port argument to the `ExecStart` of `ewscaldav.service` / `ldapgal.service`
-> (for the mail port, set `cred.json` → `lport`).
+> Do **not** enable `ews-bridge.service` (mail now uses IMAP/SMTP).
+
+### 2.4 Self-check
+
+```bash
+ss -ltn | grep -E '17081|17089'     # both ports should listen
+
+# CalDAV probe (expect 207)
+curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
+  --data '<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>' \
+  http://127.0.0.1:17081/dav/you@example.com/exchange/
+```
+
+---
+
+## 3. Thunderbird: create the IMAP mail account
+
+1. **Account Settings → New → Mail**, enter name, email, password, continue.
+2. If autodiscovery fails, configure **manually**:
+   - Account type: **IMAP** (receive)
+   - Server: `mail.example.com`, port `993`, **SSL/TLS**
+   - Username: full email `you@example.com`
+3. Outgoing server (SMTP):
+   - Server: `mail.example.com`, port `587`, **STARTTLS**
+   - Authentication: **Normal password** (not NTLM)
+   - Username: full email `you@example.com`
+
+> **SMTP auth must be "Normal password"**: Exchange supports `AUTH LOGIN`, not NTLM.
+> See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) §2.
+
+---
+
+## 4. Fix folder mapping (Sent / Drafts)
+
+Exchange uses **English** folder names (`Sent`, `Drafts`) while Thunderbird may
+default to localized names (UTF-7-encoded internally). You must point them manually:
+
+```
+Account Settings → Copies & Folders
+→ Sent copy → Other → pick server "Sent"
+→ Drafts → Other → pick server "Drafts"
+```
+
+Equivalent `prefs.js` (edit with TB fully closed):
+```javascript
+user_pref("mail.identity.idN.fcc_folder",
+          "imap://you%40example.com@mail.example.com/Sent");
+user_pref("mail.identity.idN.draft_folder",
+          "imap://you%40example.com@mail.example.com/Drafts");
+```
+
+> Without this, sent mail only exists locally and never appears in the web UI's
+> Sent folder.
+
+---
+
+## 5. Critical network settings (TLS version + proxy)
+
+**This is the most common pitfall in an Exchange 2010 environment.**
+
+### 5.1 Allow TLS 1.0
+
+Exchange 2010 (IIS 7.5) only supports **TLS 1.0**; modern Thunderbird disables it.
+
+`about:config` (or `prefs.js` with TB closed):
+```javascript
+user_pref("security.tls.version.min", 1);
+```
+
+### 5.2 Disable proxy
+
+If the system runs clash/mihomo etc., TB defaults to "Use system proxy" and routes
+internal mail traffic through the proxy incorrectly.
+
+UI: `Settings → General → Network & Disk Space → Connection → Settings... → No proxy`
+or `prefs.js`:
+```javascript
+user_pref("network.proxy.type", 0);
+```
+
+> **Quit Thunderbird fully before editing `prefs.js`**, otherwise it's overwritten.
+
+---
+
+## 6. Add the CalDAV calendar
+
+1. **Calendar → New Calendar → Network (CalDAV)**, URL:
+   `http://127.0.0.1:17081/dav/you@example.com/exchange/`
+2. After subscribing, **right-click the calendar → Properties → enable
+   "Offline Support"** (otherwise it stays empty).
+
+### 6.1 Fix the calendar's mail identity (important)
+
+If the console shows `Calendar ... has a dangling E-Mail identity configured`, the
+calendar's associated identity no longer exists (e.g. after switching from EWS to
+IMAP). Point it to the current identity:
+
+```javascript
+user_pref("calendar.registry.<calendar-id>.imip.identity.key", "id2");
+```
+
+> Without this, **sending meeting invitations fails**. See
+> [TROUBLESHOOTING.md](TROUBLESHOOTING.md) §4.
+
+---
+
+## 7. Add the LDAP address book + compose autocomplete
+
+1. **Address Book → New → LDAP Directory**:
+   - Host `127.0.0.1`, Port `17089`, Base DN `dc=example,dc=com`
+   - enable "search in address book when composing"
+2. **Compose autocomplete**: `Settings → Composition → Addressing`, set
+   **Directory Server** from `None` to that LDAP directory (equiv. `about:config`:
+   `ldap_2.autoComplete.useDirectory=true` +
+   `ldap_2.autoComplete.directoryServer=ldap_2.servers.<name>`).
+
+---
 
 ## 8. Verification checklist
 
-- `ss -ltn` shows the three ports listening;
-- Thunderbird **sends/receives mail**;
-- the **calendar** can create/edit events (not read-only);
-- the **address book** finds people, and compose autocomplete works.
+- [ ] `ss -ltn` shows `17081` / `17089` listening
+- [ ] TB **sends/receives mail** (IMAP receive, SMTP send)
+- [ ] **Sent mail** appears in the web UI (OWA)
+- [ ] **Calendar** can create/edit events (not read-only), offline support enabled
+- [ ] **Address book** finds people, compose autocomplete works
+- [ ] Console has no `SSL_ERROR_UNSUPPORTED_VERSION`, no `dangling E-Mail identity`
 
-## 9. Troubleshooting
+---
 
-- **Mail 401 / auth failure**: usually a locked domain account or an expired
-  password. Verify via `https://<exchange-host>/owa/` in a browser; a lockout
-  typically clears in ~30 minutes.
-- **Calendar always read-only**: ensure the bridge's `PROPFIND` advertises
-  `current-user-privilege-set` with `write` (this repo does); Thunderbird only
-  re-evaluates privileges while `readOnly=false`.
-- **Calendar shows no events**: right-click the calendar → Properties →
-  enable **"Offline Support"**. Thunderbird does not populate a CalDAV
-  calendar while it is off.
-- **No signature when forwarding**: Thunderbird ships with this **off**.
-  Account Settings → your identity → **Composition & Addressing** → check
-  **"Include signature for forwards"** ("Include signature for replies" is
-  on by default).
-- **Signature lands below the quoted history** (reply/forward): same tab —
-  set the reply position to **"start my reply above the quote"** and
-  **"and place my signature"** → **"below my reply (above the quote)"**.
-- **No signature anywhere (even a new message)**: Account Settings → main
-  panel: make sure **Signature text** has content and you pressed OK. If
-  **"Attach the signature from a file instead"** is checked but the file
-  path is missing/invalid, Thunderbird silently ignores the text signature
-  too — uncheck it or fix the path.
-- **Meeting attachments only accept URLs**: a Thunderbird event-dialog limitation
-  (no local-file entry point); the bridge's file-attachment (base64) code exists
-  but is never triggered.
-- **Duplicate events after accepting an invitation**: Exchange 2010 exposes no
-  iCalendar UID via standard fields; see the M-UID note in the README's
-  "Known Limitations".
-- **Port conflicts**: see the README's "Ports and how to change them".
+## 9. Quick troubleshooting
+
+| Problem | Quick fix | See |
+|---------|-----------|-----|
+| Connection error / SSL_ERROR_UNSUPPORTED_VERSION | enable TLS 1.0 | [TROUBLESHOOTING](TROUBLESHOOTING.md) §1 |
+| SMTP auth failure | use "Normal password" | [TROUBLESHOOTING](TROUBLESHOOTING.md) §2 |
+| Sent folder mismatch | map fcc_folder to `Sent` | [TROUBLESHOOTING](TROUBLESHOOTING.md) §3 |
+| Calendar dangling identity | fix `imip.identity.key` | [TROUBLESHOOTING](TROUBLESHOOTING.md) §4 |
+| Calendar read-only | PROPFIND write privileges | [TROUBLESHOOTING](TROUBLESHOOTING.md) §5 |
+| Calendar empty | enable Offline Support | [TROUBLESHOOTING](TROUBLESHOOTING.md) §6 |
+
+Full guide: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+---
 
 ## 10. Uninstall
 
 ```bash
-systemctl --user disable --now ews-bridge.service ewscaldav.service ldapgal.service check-ews-url.timer
-rm -f ~/bin/ews_bridge.py ~/bin/ewscaldav.py ~/bin/ldapgal.py ~/bin/check-ews-url.sh
+systemctl --user disable --now ewscaldav.service ldapgal.service
+sudo rm -rf /opt/ews-bridge
 rm -f ~/.config/ews-bridge/cred.json
-# To fully revert Thunderbird, restore your prefs.js backup or remove the
-# account / calendar / address book.
+# Thunderbird: remove the account / calendar / address book
 ```
+
+---
+
+*Doc version: 2.0.0 (IMAP mode) | Updated: 2026-10-16 | Maintainer: gic-commits*

@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-10-16（架构切换：邮件改用原生 IMAP/SMTP）
+
+### 架构调整 — 邮件迁移到 IMAP/SMTP ✅
+- **背景**：Thunderbird 原生 EWS 账户存在根本性缺陷（不支持服务端推送、
+  轮询定时器不触发同步、界面不自动刷新），且 Exchange 2010 只支持 TLS 1.0
+  与老旧 EWS schema，桥接成本高、体验差。
+- **调整**：
+  - 邮件改为 Thunderbird 原生 **IMAP (993 SSL/TLS) + SMTP (587 STARTTLS)**，
+    零插件、零桥接，原生 IDLE 推送 + 轮询；
+  - `ews_bridge.py` (17080) **停用**（`systemctl --user disable`），代码保留备用；
+  - 日历（`ewscaldav.py:17081`）与通讯录（`ldapgal.py:17089`）保留不变。
+- **关键配置（新设备必查）**：
+  - `security.tls.version.min=1`：允许 TLS 1.0（Exchange 2010 只支持到 TLS 1.0，
+    新版 TB 默认禁用 → `SSL_ERROR_UNSUPPORTED_VERSION`）；
+  - `network.proxy.type=0`：禁用系统代理（clash/mihomo 会错误路由内网邮件流量）；
+  - SMTP 认证方式「普通密码」（`AUTH LOGIN`，非 NTLM）；
+  - 文件夹映射：`fcc_folder`→`Sent`、`draft_folder`→`Drafts`（服务端英文名，
+    TB 默认 UTF-7 中文名对不上）；
+  - 日历 `imip.identity.key` 指向有效身份（否则 `dangling E-Mail identity`，
+    会议邀请发送失败）。
+- **文档**：新增 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)（排错指南）、
+  [docs/MIGRATION-IMAP.md](docs/MIGRATION-IMAP.md)（迁移指南）；重写
+  [docs/SETUP.md](docs/SETUP.md) / [docs/SETUP.zh-CN.md](docs/SETUP.zh-CN.md)
+  （以 IMAP 模式为主，面向新设备/新同事从零搭建）。
+
 ## 2026-09-30（M0 邮件桥：大邮件上传偶发卡死）
 
 ### M0 修复 — 转发大附件邮件卡在「正在发送消息…」 ✅
