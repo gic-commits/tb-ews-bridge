@@ -1,6 +1,6 @@
 **English** | [简体中文](README.zh-CN.md)
 
-# Thunderbird ↔ Exchange 2010 Bridge
+# Thunderbird Exchange 2010 Bridge
 
 Use an enterprise **Exchange 2010** service from **Thunderbird** (including the
 snap build) with **no third-party add-ons**:
@@ -9,9 +9,10 @@ snap build) with **no third-party add-ons**:
 - **Calendar** — via a self-hosted **CalDAV server** bridge (read + write,
   meeting invitations);
 - **Address book (GAL)** — via a self-hosted read-only **LDAP server** bridge
-  for compose-time autocomplete.
+  for compose-time autocomplete;
+- **In-Place Archive (个人存档 / Online Archive)** — via **DavMail gateway** with IMAP path prefix `/archive`.
 
-> Design: [docs/DESIGN.md](docs/DESIGN.md) ｜ Changes: [CHANGELOG.md](CHANGELOG.md) ｜ IMAP Migration: [docs/MIGRATION-IMAP.md](docs/MIGRATION-IMAP.md)
+> Design: [docs/DESIGN.md](docs/DESIGN.md) | Changes: [CHANGELOG.md](CHANGELOG.md) | IMAP Migration: [docs/MIGRATION-IMAP.md](docs/MIGRATION-IMAP.md) | **DavMail Archive Setup: [docs/DAVMAIL-ARCHIVE-SETUP.md](docs/DAVMAIL-ARCHIVE-SETUP.md)**
 
 ---
 
@@ -34,11 +35,13 @@ This project therefore adds a **local compatibility / translation bridge**:
 - **Mail**: Thunderbird uses native **IMAP/SMTP** (993/587) — no bridge needed.
   The old EWS relay (`ews_bridge.py:17080`) is disabled; code retained for reference.
 - **Calendar / Contacts**: Thunderbird native **CalDAV / LDAP**, translated to EWS by the bridge.
+- **In-Place Archive**: Thunderbird IMAP via **DavMail gateway** with path prefix `/archive`.
 
 ```
-Thunderbird ──(IMAP/SMTP :993/587)──> mail.example.com:993/587
-Thunderbird ──(原生 CalDAV:17081)──> ewscaldav.py   ──┘
-Thunderbird ──(原生 LDAP  :17089)──> ldapgal.py     ──┘
+Thunderbird --(IMAP/SMTP :993/587)--> mail.example.com:993/587
+Thunderbird --(原生 CalDAV:17081)--> ewscaldav.py
+Thunderbird --(原生 LDAP  :17089)--> ldapgal.py
+Thunderbird --(IMAP :1143 /archive)--> davmail --> EWS
 ```
 
 Core principle: **zero add-ons on the TB side, native protocols only; all
@@ -48,10 +51,11 @@ EWS-specific knowledge and compatibility handling live in the local bridge.**
 
 | File | Port | Description |
 |---|---|---|
-| `ewscaldav.py` | 17081 | CalDAV server: PROPFIND / REPORT (multiget, calendar-query) / GET / PUT / DELETE; EWS `FindItem`+`CalendarView` → ICS; UID↔ItemId/ChangeKey in SQLite; write-back via `CreateItem`/`UpdateItem`/`DeleteItem` |
-| `ldapgal.py` | 17089 | Read-only LDAP v3 (Bind/Search, minimal BER codec): filter extraction → EWS `ResolveNames` (GAL), 90s cache, ≤50 entries per query |
+| `ewscaldav.py` | 17081 | CalDAV server: PROPFIND / REPORT (multiget, calendar-query) / GET / PUT / DELETE; EWS `FindItem`+`CalendarView` --> ICS; UID<->ItemId/ChangeKey in SQLite; write-back via `CreateItem`/`UpdateItem`/`DeleteItem` |
+| `ldapgal.py` | 17089 | Read-only LDAP v3 (Bind/Search, minimal BER codec): filter extraction --> EWS `ResolveNames` (GAL), 90s cache, <=50 entries per query |
 | `check-ews-url.sh` | - | EWS bridge URL guard: verifies/restores TB's `ews_url` to the local bridge (with a 10-min systemd timer) |
 | `tests/` | - | Self-tests: EWS contacts/ResolveNames probing, LDAP Bind+Search smoke test |
+| **DavMail (external)** | 1143/1025 | IMAP/SMTP gateway to EWS; exposes In-Place Archive under `/archive` prefix |
 
 > **Note**: `ews_bridge.py` (17080) is **disabled**; code retained for reference. Mail now uses native IMAP/SMTP. See [IMAP Migration Guide](docs/MIGRATION-IMAP.md).
 
@@ -64,30 +68,39 @@ IMAP provides native IDLE push + 3-minute polling; SMTP uses port 587 with
 STARTTLS and `AUTH LOGIN` (plain password) — no NTLM required.
 
 ### 3.2 Calendar (read + write)
-- **Read**: hierarchy discovery (principal → calendar-home → calendar),
+- **Read**: hierarchy discovery (principal -> calendar-home -> calendar),
   `calendar-multiget`, `calendar-query(time-range)`, single/full GET. Window
-  ±180 days, ≤1200 events.
-- **Write-back**: TB create/edit/delete → `PUT`/`DELETE` → EWS
+  +/-180 days, <=1200 events.
+- **Write-back**: TB create/edit/delete -> `PUT`/`DELETE` -> EWS
   `CreateItem`/`UpdateItem`/`DeleteItem`.
 - **Meeting invitations**: when the ICS has `ATTENDEE`s — create
   `SendToAllAndSaveCopy`, update `SendToChangedAndSaveCopy`, delete
-  `SendToAllAndSaveCopy`; no attendees → `SendToNone`.
+  `SendToAllAndSaveCopy`; no attendees -> `SendToNone`.
 - **Timezones**: TB sends local wall-clock time (`TZID=Asia/Shanghai` or
-  floating) → the bridge converts to UTC (`Z`) at +08:00; UTC/all-day kept as-is.
-- **Attachments**: URI attachments (`ATTACH:http://…`) are persisted as a body
+  floating) -> the bridge converts to UTC (`Z`) at +08:00; UTC/all-day kept as-is.
+- **Attachments**: URI attachments (`ATTACH:http://...`) are persisted as a body
   marker and restored to `ATTACH` on read; file attachments
   (`ATTACH;ENCODING=BASE64`) are implemented but see §5.
 
 ### 3.3 Address book (read-only GAL)
 Exchange `ResolveNames` is a *search* (not an enumeration), which aligns with
 LDAP `SearchRequest`, so LDAP is used instead of CardDAV. The filter extractor
-takes the longest search term → `ResolveNames`.
+takes the longest search term -> `ResolveNames`.
+
+### 3.4 In-Place Archive (个人存档 / Online Archive)
+- **Access**: Thunderbird IMAP account -> `127.0.0.1:1143` (DavMail) with **IMAP server directory = `/archive`**
+- **Folders exposed**: `/archive/收件箱`, `/archive/已发送邮件`, `/archive/草稿`, `/archive/已删除邮件`, business folders
+- **Setup guide**: [docs/DAVMAIL-ARCHIVE-SETUP.md](docs/DAVMAIL-ARCHIVE-SETUP.md)
+
+---
 
 ## 4. Quick Start
 
 > For a detailed, from-scratch walkthrough (install Thunderbird, create the IMAP
 > account, point CalDAV/LDAP at the bridge, run as services), see
 > [docs/SETUP.md](docs/SETUP.md).
+
+> **For In-Place Archive access via DavMail**, see **[docs/DAVMAIL-ARCHIVE-SETUP.md](docs/DAVMAIL-ARCHIVE-SETUP.md)**.
 
 ### 4.1 Credentials (never in source)
 
@@ -130,36 +143,45 @@ systemd user-unit templates are in `systemd/`.
    - SMTP: `mail.example.com:587`, STARTTLS, Normal password
    - Detailed config: see [IMAP Migration Guide](docs/MIGRATION-IMAP.md)
 
-2. **Calendar** → New Calendar → Network Calendar (CalDAV), URL:
+2. **Calendar** -> New Calendar -> Network Calendar (CalDAV), URL:
    `http://127.0.0.1:17081/dav/you@your-company.com/exchange/`
 
-3. **Address book** → New → LDAP Directory: Host `127.0.0.1`, Port `17089`,
+3. **Address book** -> New -> LDAP Directory: Host `127.0.0.1`, Port `17089`,
    Base DN `dc=example,dc=com` (enable "search in address book when composing").
 
-5. **Compose autocomplete** → Settings → Composition → Addressing: change
+4. **In-Place Archive (个人存档)** -> **IMAP** account:
+   - Server: `127.0.0.1`, Port: `1143`, No encryption
+   - **Advanced -> IMAP server directory: `/archive`**
+   - SMTP: `127.0.0.1:1025`, No encryption
+   - Subscribe only `/archive/...` folders
+   - Full guide: [docs/DAVMAIL-ARCHIVE-SETUP.md](docs/DAVMAIL-ARCHIVE-SETUP.md)
+
+5. **Compose autocomplete** -> Settings -> Composition -> Addressing: change
    **Directory Server** from `None` to that LDAP directory (equivalently, in
    about:config set `ldap_2.autoComplete.useDirectory=true` and
-   `ldap_2.autoComplete.directoryServer=…`).
+   `ldap_2.autoComplete.directoryServer=...`).
 
-### 4.2 Ports and how to change them
+### 4.4 Ports and how to change them
 
 Defaults (all bind `127.0.0.1`, non-privileged):
 
 | Service | Default port | Where it is configured |
 |---|---|---|
 | Calendar CalDAV (`ewscaldav.py`) | `17081` | `--port N` (default `17081`; add it to the systemd `ExecStart`) |
-| Address book LDAP (`ldapgal.py`) | `17089` | CLI argument (`ldapgal.py N`) or `cred.json` → `ldap_port` |
+| Address book LDAP (`ldapgal.py`) | `17089` | CLI argument (`ldapgal.py N`) or `cred.json` -> `ldap_port` |
+| DavMail IMAP/SMTP | `1143`/`1025` | `davmail.properties` -> `imapPort`/`smtpPort` |
 
 To change any port, update **all** of the following consistently:
 
 1. The service config above (and the matching `systemd/*.service` `ExecStart` for
-   `ewscaldav` / `ldapgal`).
+   `ewscaldav` / `ldapgal` / DavMail).
 2. Thunderbird side (in `prefs.js`, or via the account / calendar / address-book
    dialogs):
-   - `calendar.registry.<id>.uri` →
+   - `calendar.registry.<id>.uri` ->
      `http://127.0.0.1:<caldav port>/dav/<user>/exchange/`
-   - `ldap_2.servers.<name>.uri` →
+   - `ldap_2.servers.<name>.uri` ->
      `ldap://127.0.0.1:<ldap port>/<base>??sub?(objectclass=*)`
+   - Archive IMAP account -> Server `127.0.0.1`, Port `1143`, Path prefix `/archive`
 
 Close Thunderbird before editing `prefs.js`, otherwise the changes are
 overwritten on exit.
@@ -171,13 +193,13 @@ overwritten on exit.
 - **Duplicate events from accepted invitations**: Exchange 2010 calendar items
   do not expose an iCalendar UID via the standard fields, so the bridge assigns
   each event a random UUID; when the user *accepts* an invitation from mail, TB
-  creates a local event with the invitation's original UID → the same meeting
+  creates a local event with the invitation's original UID -> the same meeting
   appears twice. **Not fixed yet**; a viable fix is to read the meeting's
   `PidLidGlobalObjectId` extended property as the UID (verified readable and
   matching the invitation UID). See the Roadmap.
 - **Server is Exchange 2010**: EWS SOAP only, relies on `curl --ntlm`, no
   modern authentication.
-- **Single account, loopback only**: all three services bind `127.0.0.1`.
+- **Single account, loopback only**: all services bind `127.0.0.1`.
 - **etag versioning**: when the read-back serialization changes (e.g. adding
   `ATTENDEE`), the `etag()` suffix must be bumped to force one client refetch,
   otherwise clients keep their cache under the old etag.
@@ -206,28 +228,30 @@ overwritten on exit.
 
 - **M0 Mail bridge**: Thunderbird's native EWS requests were relayed by the local
   bridge, which performed the NTLM handshake and rewrote request bodies
-  (`archive`→`inbox`, drops `InternetMessageId`) to satisfy EWS 2010, injected
+  (`archive`->`inbox`, drops `InternetMessageId`) to satisfy EWS 2010, injected
   missing ChangeKeys for write operations, repaired inline images on
-  forward/reply (`x-moz-ews://` → `cid:` + `multipart/related`), with
+  forward/reply (`x-moz-ews://` -> `cid:` + `multipart/related`), with
   per-operation logging. **Now replaced by native IMAP/SMTP.**
 - **M1 Read-only calendar**: CalDAV discovery (OPTIONS/PROPFIND hierarchy),
   `calendar-multiget`, `calendar-query(time-range)`, single/full GET; EWS
-  `FindItem+CalendarView` (±180 days, ≤1200) → ICS; `uid ↔ ItemId/ChangeKey`
+  `FindItem+CalendarView` (+/-180 days, <=1200) -> ICS; `uid <-> ItemId/ChangeKey`
   stored in SQLite.
-- **M2 Calendar write-back**: TB create/edit/delete → `PUT`/`DELETE` → EWS
+- **M2 Calendar write-back**: TB create/edit/delete -> `PUT`/`DELETE` -> EWS
   `CreateItem`/`UpdateItem`/`DeleteItem`; handles schema element order, FieldURI
   namespaces, and the mandatory `ChangeKey`.
-- **M3 Meeting invitations**: parse `ATTENDEE` (required/optional) → EWS
+- **M3 Meeting invitations**: parse `ATTENDEE` (required/optional) -> EWS
   attendees; create/update/delete use `SendToAllAndSaveCopy` /
   `SendToChangedAndSaveCopy` / `SendToAllAndSaveCopy` (cancel); the read side
   emits `ORGANIZER`/`ATTENDEE` so TB shows participants correctly.
 - **M4 Read-only GAL**: read-only LDAP v3 (Bind/Search + BER codec); filter
-  extraction → EWS `ResolveNames`; 90s cache, ≤50 per query; verified with the
+  extraction -> EWS `ResolveNames`; 90s cache, <=50 per query; verified with the
   TB address book search and compose-time autocomplete.
-- **M5 Hardening**: normalize timezones to UTC; URI attachments (body marker ↔
+- **M5 Hardening**: normalize timezones to UTC; URI attachments (body marker <-> 
   `ATTACH`); advertise calendar read/write privileges (otherwise TB forces the
   calendar read-only on every start); sync performance (batch body fetch, no
   per-event `GetItem`).
+- **Archive access**: DavMail gateway with IMAP path prefix `/archive` exposes
+  In-Place Archive folders (收件箱, 已发送邮件, 草稿, 业务文件夹等).
 
 ### TODO
 
@@ -239,9 +263,9 @@ overwritten on exit.
     `DistinguishedPropertySetId=Meeting, PropertyId=3, PropertyType=Binary`
     returns `PidLidGlobalObjectId` (base64); its hex value is *exactly* the
     invitation's iCalendar UID — verified to match the TB-side event's `uid`.
-  - **Approach**: batch-`GetItem` this extended property → use it as the CalDAV
-    UID (instead of a random UUID) → events TB created from the invitation and
-    the EWS meeting merge automatically; migrate the local `uid↔itemid` map.
+  - **Approach**: batch-`GetItem` this extended property -> use it as the CalDAV
+    UID (instead of a random UUID) -> events TB created from the invitation and
+    the EWS meeting merge automatically; migrate the local `uid<->itemid` map.
   - **Prerequisite**: none (capability already available); only implementation
     plus a one-time UID migration.
 - **Local-file attachments** (waiting on upstream)
