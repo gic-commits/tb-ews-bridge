@@ -11,12 +11,12 @@
 
 ```
 Thunderbird (双账户)
-├── 账户 1：主邮箱 → mail.maipu.com:993 (直连 IMAP/SMTP)
+├── 账户 1：主邮箱 → mail.example.com:993 (直连 IMAP/SMTP)
 └── 账户 2：个人存档 → 127.0.0.1:1143 (DavMail 网关 + /archive 前缀)
 
 DavMail 网关 (systemd 用户服务)
 ├── 监听: 127.0.0.1:1143 (IMAP), 1025 (SMTP)
-├── 协议: EWS (HTTPS) → mail.maipu.com/ews/exchange.asmx
+├── 协议: EWS (HTTPS) → mail.example.com/ews/exchange.asmx
 ├── 认证: NTLM
 └── 模式: -server (headless 后台运行)
 ```
@@ -43,11 +43,11 @@ unzip davmail-7.1.0-4498.zip -d davmail
 ```bash
 docker run -d --name davmail \
   -p 1143:1143 -p 1025:1025 \
-  -e DAVMAIL_URL=https://mail.maipu.com/ews/exchange.asmx \
+  -e DAVMAIL_URL=https://mail.example.com/ews/exchange.asmx \
   -e DAVMAIL_MODE=IMAP \
   -e DAVMAIL_AUTHENTICATION=NTLM \
-  -e DAVMAIL_SERVER=mail.maipu.com \
-  -e DAVMAIL_DOMAIN=maipu.com \
+  -e DAVMAIL_SERVER=mail.example.com \
+  -e DAVMAIL_DOMAIN=your-company.com \
   -e DAVMAIL_ALLOW_REMOTE=true \
   davmail/davmail
 ```
@@ -63,11 +63,11 @@ docker run -d --name davmail \
 ### 核心配置 (davmail.properties)
 ```properties
 # EWS 连接
-davmail.url=https://mail.maipu.com/ews/exchange.asmx
+davmail.url=https://mail.example.com/ews/exchange.asmx
 davmail.mode=IMAP
 davmail.authentication=NTLM
-davmail.server=mail.maipu.com
-davmail.domain=maipu.com
+davmail.server=mail.example.com
+davmail.domain=your-company.com
 davmail.allowRemote=true
 
 # 端口 (仅启用 IMAP/SMTP)
@@ -143,17 +143,17 @@ ss -ltnp | grep -E '1143|1025'
 ```
 账户类型: IMAP
 姓名: 你的名字
-邮箱地址: fuqingqiu@mail.maipu.com
+邮箱地址: you@your-company.com
 密码: ********
 
 收件服务器 (IMAP):
-  服务器: mail.maipu.com
+  服务器: mail.example.com
   端口: 993
   连接安全性: SSL/TLS
   认证方式: 普通密码
 
 发件服务器 (SMTP):
-  服务器: mail.maipu.com
+  服务器: mail.example.com
   端口: 587
   连接安全性: STARTTLS
   认证方式: 普通密码
@@ -163,7 +163,7 @@ ss -ltnp | grep -E '1143|1025'
 ```
 账户类型: IMAP
 姓名: 你的名字 (Archive)
-邮箱地址: fuqingqiu@mail.maipu.com
+邮箱地址: you@your-company.com
 密码: ********
 
 收件服务器 (IMAP):
@@ -231,8 +231,8 @@ Thunderbird 设置 **IMAP 服务器目录 = `/archive`** 后，客户端自动�
 
 ### 认证失败
 - 尝试 `davmail.authentication=NTLM` 或 `Basic`
-- 确认域名格式: `maipu.com` 或留空
-- 用户名格式: `fuqingqiu@mail.maipu.com` 或 `maipu.com\fuqingqiu`
+- 确认域名格式: `your-company.com` 或留空
+- 用户名格式: `you@your-company.com` 或 `your-company.com\your-username`
 
 ---
 
@@ -260,7 +260,7 @@ python3 -c "
 import socket
 s = socket.create_connection(('127.0.0.1', 1143), timeout=5)
 print(s.recv(1024).decode())
-s.sendall(b'a1 LOGIN fuqingqiu@mail.maipu.com PASSWORD\r\n')
+s.sendall(b'a1 LOGIN you@your-company.com PASSWORD\r\n')
 print(s.recv(1024).decode())
 s.sendall(b'a2 LIST \"\" \"*\"\r\n')
 while True:
