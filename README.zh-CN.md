@@ -60,6 +60,23 @@ TB 以原生 **IMAP (993, SSL/TLS)** 和 **SMTP (587, STARTTLS)** 直连。
 原 EWS 中继 (`ews_bridge.py:17080`) 已停用，代码保留备用。
 IMAP 提供原生 IDLE 推送 + 3 分钟轮询；SMTP 使用 587 端口、STARTTLS 与 `AUTH LOGIN`（明文密码） — 无需 NTLM。
 
+> **⚠️ 重要：Exchange 2010 的 SMTP 587（STARTTLS）经常失效**
+> Exchange 2010 的 SMTP 587（STARTTLS）经常不稳定——连接容易超时、中断或被服务器拒绝。
+>
+> **推荐方案：通过 DavMail 网关代理 SMTP**，而不是直连 `mail.example.com:587`。DavMail 将本地 SMTP 连接转换为 EWS 协议发送到 Exchange，稳定性更高。
+>
+> 配置 Thunderbird **发件服务器（SMTP）**：
+>
+> | 字段 | 值 |
+> |---|---|
+> | 服务器 | `127.0.0.1` |
+> | 端口 | `1143` |
+> | 连接安全性 | **无**（本地回环，无需加密） |
+> | 认证方式 | 普通密码 |
+> | 用户名 | 完整邮箱 `you@your-company.com` |
+>
+> > **为什么不走端口 25？** 端口 25 常被 ISP/运营商封禁，且是明文传输不加密。通过 DavMail 代理，SMTP 连接走本地回环（`127.0.0.1:1143`），DavMail 再通过 EWS 安全提交到 Exchange，更安全稳定。
+
 ### 3.2 日历（读 + 写回）
 - **读**：层级发现（principal → calendar-home → calendar）、`calendar-multiget`、
   `calendar-query(time-range)`、单/全量 GET。事件窗口 ±180 天、≤1200 条。

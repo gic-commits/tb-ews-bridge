@@ -129,6 +129,25 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
 > **SMTP 认证方式必须是「普通密码」**：Exchange 支持 `AUTH LOGIN`，不需要 NTLM。
 > 详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) §2。
 
+### ⚠️ 重要：Exchange 2010 的 SMTP 587（STARTTLS）经常失效
+
+Exchange 2010 的 SMTP 587（STARTTLS）经常不稳定——连接容易超时、中断或被服务器拒绝。
+
+**推荐方案：通过 DavMail 网关代理 SMTP**，而不是直连 `mail.example.com:587`。DavMail 将本地 SMTP 连接转换为 EWS 协议发送到 Exchange，稳定性更高。
+
+配置 Thunderbird **发件服务器（SMTP）**：
+
+| 字段 | 值 |
+|------|-----|
+| 服务器 | `127.0.0.1` |
+| 端口 | `1143` |
+| 连接安全性 | **无**（本地回环，无需加密） |
+| 认证方式 | 普通密码 |
+| 用户名 | 完整邮箱 `you@your-company.com` |
+| 密码 | `********` |
+
+> **为什么不走端口 25？** 端口 25 常被 ISP/运营商封禁，且是明文传输不加密。通过 DavMail 代理，SMTP 连接走本地回环（`127.0.0.1:1143`），DavMail 再通过 EWS 安全提交到 Exchange，更安全稳定。
+
 ---
 
 ## 4. 修复文件夹映射（发件箱 / 草稿箱）

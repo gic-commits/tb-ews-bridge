@@ -132,6 +132,30 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
 > **SMTP auth must be "Normal password"**: Exchange supports `AUTH LOGIN`, not NTLM.
 > See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) §2.
 
+### ⚠️ Important: Exchange 2010 SMTP 587 (STARTTLS) often fails
+
+Exchange 2010's native SMTP over port **587 STARTTLS is frequently unreliable**—
+connections often drop, time out, or are rejected by the server. 
+
+**Recommended solution:** route SMTP through the **DavMail gateway** (localhost:1143)
+instead of connecting directly to `mail.example.com:587`. DavMail converts the
+local SMTP connection into EWS calls to Exchange, which is far more stable.
+
+Configure Thunderbird's **Outgoing server (SMTP)** as:
+
+| Field | Value |
+|-------|-------|
+| Server | `127.0.0.1` |
+| Port | `1143` |
+| Connection security | **None** (local loopback, no TLS needed) |
+| Authentication | Normal password |
+| Username | `you@your-company.com` |
+
+> **Why not use port 25?** Port 25 is often blocked by ISPs/firewalls and transmits
+> mail in plaintext without encryption. Routing SMTP through DavMail keeps the
+> submission local (127.0.0.1:1143) and lets DavMail handle the EWS submission
+> to Exchange securely.
+
 ---
 
 ## 4. Fix folder mapping (Sent / Drafts)
