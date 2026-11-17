@@ -8,17 +8,20 @@ the full "Thunderbird ↔ Exchange 2010" integration.
 
 ## Current architecture (important)
 
-**Mail uses native IMAP/SMTP; calendar/contacts use local bridges**:
+**Mail/Calendar use DavMail gateway; contacts use local LDAP bridge**:
 
 | Function | Protocol / port | Notes |
 |----------|-----------------|-------|
-| Mail (receive) | IMAP `993` (SSL/TLS) | Thunderbird native, no bridge |
-| Mail (send) | SMTP `587` (STARTTLS) | Thunderbird native, no bridge |
-| Calendar | CalDAV `17081` | local bridge `ewscaldav.py` → EWS |
-| Contacts | LDAP `17089` | local bridge `ldapgal.py` → EWS |
+| Mail (receive) | IMAP `127.0.0.1:1143` | via DavMail → EWS |
+| Mail (send) | SMTP `127.0.0.1:1025` | via DavMail → EWS |
+| Calendar | CalDAV `127.0.0.1:1080` | via DavMail → EWS |
+| Contacts (GAL) | LDAP `127.0.0.1:17089` | local bridge `ldapgal.py` → EWS |
+| Archive | IMAP `127.0.0.1:17143` | via `davmail-filter` whitelist `/archive/` → DavMail |
 
-> The legacy EWS mail bridge (`ews_bridge.py:17080`) is **disabled**; its code is
-> kept for reference only. For migrating from the old EWS mode, see
+> The legacy EWS mail bridge (`ews_bridge.py:17080`) and the self-hosted CalDAV
+> bridge (`ewscaldav.py:17081`) are **disabled**; their code is kept for reference
+> only. DavMail LDAP (`1389`) is also disabled — contacts use `ldapgal.py` instead.
+> For migrating from the old EWS/IMAP-direct mode, see
 > [MIGRATION-IMAP.md](MIGRATION-IMAP.md).
 
 ---
@@ -50,7 +53,10 @@ sudo snap install thunderbird        # or: sudo apt install thunderbird
 
 ---
 
-## 2. Deploy the local bridges (calendar + contacts)
+## 2. Deploy the local bridges (contacts only)
+
+Calendar is now served by **DavMail CalDAV** (external flatpak service), so only
+the contacts LDAP bridge needs to be deployed locally.
 
 ### 2.1 Clone and deploy to a stable path
 
@@ -62,13 +68,14 @@ git clone https://github.com/<your-org>/tb-ews-bridge.git
 cd tb-ews-bridge
 
 sudo mkdir -p /opt/ews-bridge
-sudo cp ewscaldav.py ldapgal.py ews_bridge.py /opt/ews-bridge/
+sudo cp ldapgal.py ews_bridge.py /opt/ews-bridge/
 sudo chmod +x /opt/ews-bridge/*.py
 sudo chown -R $(whoami):$(whoami) /opt/ews-bridge
 ```
 
-> `ewscaldav.py` / `ldapgal.py` `import ews_bridge.py` (to reuse its EWS channel),
+> `ldapgal.py` `import ews_bridge.py` (to reuse its EWS channel),
 > so `ews_bridge.py` must be deployed too (even if not run as a service).
+> `ewscaldav.py` is no longer deployed — Calendar uses DavMail CalDAV instead.
 
 ### 2.2 Configure credentials
 
@@ -95,24 +102,29 @@ chmod 600 ~/.config/ews-bridge/cred.json
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp systemd/ewscaldav.service systemd/ldapgal.service ~/.config/systemd/user/
+cp systemd/ldapgal.service systemd/davmail-filter.service ~/.config/systemd/user/
 
 # ensure ExecStart points at /opt/ews-bridge/ (the repo template already does)
 systemctl --user daemon-reload
-systemctl --user enable --now ewscaldav.service ldapgal.service
+systemctl --user enable --now ldapgal.service davmail-filter.service
 ```
 
-> Do **not** enable `ews-bridge.service` (mail now uses IMAP/SMTP).
+> Do **not** enable `ewscaldav.service` (Calendar now uses DavMail CalDAV `1080`).
+> Do **not** enable `ews-bridge.service` (mail now uses DavMail IMAP/SMTP).
+> Do **not** enable `check-ews-url.timer` (guarded the old EWS relay, no longer used).
 
 ### 2.4 Self-check
 
 ```bash
-ss -ltn | grep -E '17081|17089'     # both ports should listen
+ss -ltn | grep -E '1143|1025|1080|17089|17143'   # all ports should listen
 
-# CalDAV probe (expect 207)
+# LDAP probe
+ss -ltn | grep -q '17089' && echo "LDAP bridge OK"
+
+# CalDAV probe via DavMail (expect 207)
 curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
   --data '<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>' \
-  http://127.0.0.1:17081/dav/you@example.com/exchange/
+  http://127.0.0.1:1080/dav/you@example.com/exchange/
 ```
 
 ---
@@ -122,10 +134,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
 1. **Account Settings → New → Mail**, enter name, email, password, continue.
 2. If autodiscovery fails, configure **manually**:
    - Account type: **IMAP** (receive)
-   - Server: `mail.example.com`, port `993`, **SSL/TLS**
+   - Server: `127.0.0.1`, port `1143`, **No encryption** (local loopback)
    - Username: full email `you@example.com`
 3. Outgoing server (SMTP):
-   - Server: `mail.example.com`, port `587`, **STARTTLS**
+   - Server: `127.0.0.1`, port `1025`, **No encryption**
    - Authentication: **Normal password** (not NTLM)
    - Username: full email `you@example.com`
 
@@ -135,9 +147,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
 ### ⚠️ Important: Exchange 2010 SMTP 587 (STARTTLS) often fails
 
 Exchange 2010's native SMTP over port **587 STARTTLS is frequently unreliable**—
-connections often drop, time out, or are rejected by the server. 
+connections often drop, time out, or are rejected by the server.
 
-**Recommended solution:** route SMTP through the **DavMail gateway** (localhost:1143)
+**Recommended solution:** route SMTP through the **DavMail gateway** (localhost:1025)
 instead of connecting directly to `mail.example.com:587`. DavMail converts the
 local SMTP connection into EWS calls to Exchange, which is far more stable.
 
@@ -146,14 +158,14 @@ Configure Thunderbird's **Outgoing server (SMTP)** as:
 | Field | Value |
 |-------|-------|
 | Server | `127.0.0.1` |
-| Port | `1143` |
+| Port | `1025` |
 | Connection security | **None** (local loopback, no TLS needed) |
 | Authentication | Normal password |
 | Username | `you@your-company.com` |
 
 > **Why not use port 25?** Port 25 is often blocked by ISPs/firewalls and transmits
 > mail in plaintext without encryption. Routing SMTP through DavMail keeps the
-> submission local (127.0.0.1:1143) and lets DavMail handle the EWS submission
+> submission local (`127.0.0.1:1025`) and lets DavMail handle the EWS submission
 > to Exchange securely.
 
 ---
@@ -208,12 +220,10 @@ user_pref("network.proxy.type", 0);
 
 > **Quit Thunderbird fully before editing `prefs.js`**, otherwise it's overwritten.
 
----
-
 ## 6. Add the CalDAV calendar
 
 1. **Calendar → New Calendar → Network (CalDAV)**, URL:
-   `http://127.0.0.1:17081/dav/you@example.com/exchange/`
+   `http://127.0.0.1:1080/dav/you@example.com/exchange/`
 2. After subscribing, **right-click the calendar → Properties → enable
    "Offline Support"** (otherwise it stays empty).
 
@@ -246,8 +256,8 @@ user_pref("calendar.registry.<calendar-id>.imip.identity.key", "id2");
 
 ## 8. Verification checklist
 
-- [ ] `ss -ltn` shows `17081` / `17089` listening
-- [ ] TB **sends/receives mail** (IMAP receive, SMTP send)
+- [ ] `ss -ltn` shows `1143` / `1025` / `1080` / `17089` / `17143` listening
+- [ ] TB **sends/receives mail** (IMAP receive via DavMail `1143`, SMTP send via DavMail `1025`)
 - [ ] **Sent mail** appears in the web UI (OWA)
 - [ ] **Calendar** can create/edit events (not read-only), offline support enabled
 - [ ] **Address book** finds people, compose autocomplete works
@@ -273,7 +283,7 @@ Full guide: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 ## 10. Uninstall
 
 ```bash
-systemctl --user disable --now ewscaldav.service ldapgal.service
+systemctl --user disable --now ldapgal.service davmail-filter.service
 sudo rm -rf /opt/ews-bridge
 rm -f ~/.config/ews-bridge/cred.json
 # Thunderbird: remove the account / calendar / address book

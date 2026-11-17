@@ -7,17 +7,17 @@
 
 ## 当前架构（重要）
 
-**邮件用原生 IMAP/SMTP，日历/通讯录用本地桥**：
+**邮件/日历使用 DavMail 网关，通讯录用本地 LDAP 桥**：
 
 | 功能 | 协议/端口 | 说明 |
 |------|-----------|------|
-| 邮件（收） | IMAP `993` (SSL/TLS) | Thunderbird 原生，无需桥 |
-| 邮件（发） | SMTP `587` (STARTTLS) | Thunderbird 原生，无需桥 |
-| 日历 | CalDAV `17081` | 本地桥 `ewscaldav.py` → EWS |
-| 通讯录 | LDAP `17089` | 本地桥 `ldapgal.py` → EWS |
+| 邮件（收） | IMAP `127.0.0.1:1143` | 经 DavMail → EWS |
+| 邮件（发） | SMTP `127.0.0.1:1025` | 经 DavMail → EWS |
+| 日历 | CalDAV `127.0.0.1:1080` | 经 DavMail → EWS |
+| 通讯录（GAL） | LDAP `127.0.0.1:17089` | 本地桥 `ldapgal.py` → EWS |
+| 存档 | IMAP `127.0.0.1:17143` | 经 `davmail-filter` 白名单 `/archive/` → DavMail |
 
-> 历史 EWS 邮件桥（`ews_bridge.py:17080`）已停用，仅保留代码备用，本文不再介绍。
-> 如需从旧 EWS 模式迁移，见 [MIGRATION-IMAP.md](MIGRATION-IMAP.md)。
+> 历史 EWS 邮件桥（`ews_bridge.py:17080`）和自研 CalDAV 桥（`ewscaldav.py:17081`）均已停用，仅保留代码备用。DavMail LDAP（`1389`）也已关闭，通讯录改用 `ldapgal.py`。如需从旧 EWS/直连 IMAP 模式迁移，见 [MIGRATION-IMAP.md](MIGRATION-IMAP.md)。
 
 ---
 
@@ -47,7 +47,9 @@ sudo snap install thunderbird        # 或 sudo apt install thunderbird
 
 ---
 
-## 2. 部署本地桥（日历 + 通讯录）
+## 2. 部署本地桥（仅通讯录）
+
+日历由 **DavMail CalDAV**（外部 flatpak 服务）提供，因此本地只需部署通讯录 LDAP 桥。
 
 ### 2.1 拉取代码并部署到固定路径
 
@@ -59,13 +61,14 @@ git clone https://github.com/<your-org>/tb-ews-bridge.git
 cd tb-ews-bridge
 
 sudo mkdir -p /opt/ews-bridge
-sudo cp ewscaldav.py ldapgal.py ews_bridge.py /opt/ews-bridge/
+sudo cp ldapgal.py ews_bridge.py /opt/ews-bridge/
 sudo chmod +x /opt/ews-bridge/*.py
 sudo chown -R $(whoami):$(whoami) /opt/ews-bridge
 ```
 
-> 说明：`ewscaldav.py` / `ldapgal.py` 会 `import ews_bridge.py`（复用其 EWS 通道），
+> 说明：`ldapgal.py` 会 `import ews_bridge.py`（复用其 EWS 通道），
 > 所以 `ews_bridge.py` 也要一起部署（即使不作为服务运行）。
+> `ewscaldav.py` 不再部署——日历使用 DavMail CalDAV。
 
 ### 2.2 配置凭据
 
@@ -92,24 +95,29 @@ chmod 600 ~/.config/ews-bridge/cred.json
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp systemd/ewscaldav.service systemd/ldapgal.service ~/.config/systemd/user/
+cp systemd/ldapgal.service systemd/davmail-filter.service ~/.config/systemd/user/
 
 # 确保 ExecStart 指向 /opt/ews-bridge/（仓库模板默认已是）
 systemctl --user daemon-reload
-systemctl --user enable --now ewscaldav.service ldapgal.service
+systemctl --user enable --now ldapgal.service davmail-filter.service
 ```
 
-> **不要**启用 `ews-bridge.service`（邮件已走 IMAP/SMTP）。
+> **不要**启用 `ewscaldav.service`（日历已改用 DavMail CalDAV `1080`）。
+> **不要**启用 `ews-bridge.service`（邮件已走 DavMail IMAP/SMTP）。
+> **不要**启用 `check-ews-url.timer`（守护旧 EWS 中继，已不再使用）。
 
 ### 2.4 自检
 
 ```bash
-ss -ltn | grep -E '17081|17089'     # 两个端口应监听
+ss -ltn | grep -E '1143|1025|1080|17089|17143'   # 各端口应监听
 
-# CalDAV 探测（期望 207）
+# LDAP 探测
+ss -ltn | grep -q '17089' && echo "LDAP 桥正常"
+
+# CalDAV 探测（经 DavMail，期望 207）
 curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
   --data '<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>' \
-  http://127.0.0.1:17081/dav/you@example.com/exchange/
+  http://127.0.0.1:1080/dav/you@example.com/exchange/
 ```
 
 ---
@@ -119,10 +127,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PROPFIND -H 'Depth: 0' \
 1. **账户设置 → 新建 → 邮件**，输入姓名、邮箱、密码，继续。
 2. Thunderbird 可能自动探测；若失败则**手动配置**：
    - 账户类型：**IMAP**（收件）
-   - 收件服务器：`mail.example.com`，端口 `993`，**SSL/TLS**
+   - 收件服务器：`127.0.0.1`，端口 `1143`，**无加密**（本地回环）
    - 用户名：完整邮箱 `you@example.com`
 3. 发件服务器（SMTP）：
-   - 服务器：`mail.example.com`，端口 `587`，**STARTTLS**
+   - 服务器：`127.0.0.1`，端口 `1025`，**无加密**
    - 认证方式：**普通密码**（不是 NTLM）
    - 用户名：完整邮箱 `you@example.com`
 
@@ -140,13 +148,13 @@ Exchange 2010 的 SMTP 587（STARTTLS）经常不稳定——连接容易超时�
 | 字段 | 值 |
 |------|-----|
 | 服务器 | `127.0.0.1` |
-| 端口 | `1143` |
+| 端口 | `1025` |
 | 连接安全性 | **无**（本地回环，无需加密） |
 | 认证方式 | 普通密码 |
 | 用户名 | 完整邮箱 `you@your-company.com` |
 | 密码 | `********` |
 
-> **为什么不走端口 25？** 端口 25 常被 ISP/运营商封禁，且是明文传输不加密。通过 DavMail 代理，SMTP 连接走本地回环（`127.0.0.1:1143`），DavMail 再通过 EWS 安全提交到 Exchange，更安全稳定。
+> **为什么不走端口 25？** 端口 25 常被 ISP/运营商封禁，且是明文传输不加密。通过 DavMail 代理，SMTP 连接走本地回环（`127.0.0.1:1025`），DavMail 再通过 EWS 安全提交到 Exchange，更安全稳定。
 
 ---
 
@@ -204,7 +212,7 @@ user_pref("network.proxy.type", 0);
 ## 6. 添加 CalDAV 日历
 
 1. **日历 → 新建日历 → 网络日历（CalDAV）**，URL：
-   `http://127.0.0.1:17081/dav/you@example.com/exchange/`
+   `http://127.0.0.1:1080/dav/you@example.com/exchange/`
 2. 订阅后，**右键日历 → 属性 → 勾选「离线支持」**（否则日历为空）。
 
 ### 6.1 修复日历关联的邮件身份（重要）
@@ -235,8 +243,8 @@ user_pref("calendar.registry.<日历id>.imip.identity.key", "id2");
 
 ## 8. 验证清单
 
-- [ ] `ss -ltn` 显示 `17081` / `17089` 监听
-- [ ] TB **收发邮件**正常（IMAP 收、SMTP 发）
+- [ ] `ss -ltn` 显示 `1143` / `1025` / `1080` / `17089` / `17143` 监听
+- [ ] TB **收发邮件**正常（IMAP 收经 DavMail `1143`，SMTP 发经 DavMail `1025`）
 - [ ] **发件箱**在 Web 界面（OWA）可见
 - [ ] **日历**可建/改/删事件（不是只读），离线支持已勾选
 - [ ] **地址簿**能搜到人，写信自动补全可用
@@ -248,7 +256,7 @@ user_pref("calendar.registry.<日历id>.imip.identity.key", "id2");
 
 | 问题 | 快速定位 | 详见 |
 |------|----------|------|
-| 连接 mail.example.com 错误 / SSL_ERROR_UNSUPPORTED_VERSION | TLS 1.0 未启用 | [TROUBLESHOOTING](TROUBLESHOOTING.md) §1 |
+| 连接 `127.0.0.1:1143/1025` 错误 / SSL_ERROR_UNSUPPORTED_VERSION | TLS 1.0 未启用 | [TROUBLESHOOTING](TROUBLESHOOTING.md) §1 |
 | SMTP 认证失败 | 认证方式应为「普通密码」 | [TROUBLESHOOTING](TROUBLESHOOTING.md) §2 |
 | 发件箱对不上 | 文件夹映射指向 Sent | [TROUBLESHOOTING](TROUBLESHOOTING.md) §3 |
 | 日历悬空身份告警 | imip.identity.key 失效 | [TROUBLESHOOTING](TROUBLESHOOTING.md) §4 |
@@ -262,7 +270,7 @@ user_pref("calendar.registry.<日历id>.imip.identity.key", "id2");
 ## 10. 卸载
 
 ```bash
-systemctl --user disable --now ewscaldav.service ldapgal.service
+systemctl --user disable --now ldapgal.service davmail-filter.service
 sudo rm -rf /opt/ews-bridge
 rm -f ~/.config/ews-bridge/cred.json
 # Thunderbird 侧：删除账户 / 日历 / 地址簿即可

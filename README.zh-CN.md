@@ -5,10 +5,10 @@
 让 **Thunderbird（含 snap 版）** 在不依赖任何第三方插件的前提下，接入企业
 **Exchange 2010** 服务：
 
-- **邮件** —— 经 **IMAP/SMTP 原生协议** (993/587)，替代原 EWS 中继，支持 IDLE 推送与标准轮询；
-- **日历** —— 自研 **CalDAV 服务端**桥接，支持只读 + 写回（建/改/删、会议邀请）；
-- **通讯录（GAL）** —— 自研 **只读 LDAP 服务端**桥接，供写信时自动补全；
-- **In-Place Archive（个人存档 / Online Archive）** —— 经 **DavMail 网关**，IMAP 路径前缀 `/archive` 访问。
+- **邮件** —— 经 **DavMail 网关** (IMAP `127.0.0.1:1143`, SMTP `127.0.0.1:1025)`，替代原直连 IMAP/SMTP 和 EWS 中继；
+- **日历** —— 经 **DavMail CalDAV** (`127.0.0.1:1080)`，替代原自研 CalDAV 桥；
+- **通讯录（GAL）** —— 自研 **只读 LDAP 服务端**桥接 (`127.0.0.1:17089)`，供写信时自动补全；
+- **In-Place Archive（个人存档 / Online Archive）** —— 经 **DavMail 网关** (IMAP `127.0.0.1:1143)`，外加 **davmail-filter** (`127.0.0.1:17143)` 做 `/archive` 白名单过滤。
 
 > 设计见 [docs/DESIGN.md](docs/DESIGN.md) | 变更见 [CHANGELOG.md](CHANGELOG.md) | IMAP 迁移 [docs/MIGRATION-IMAP.md](docs/MIGRATION-IMAP.md) | **DavMail 存档配置 [docs/DAVMAIL-ARCHIVE-SETUP.md](docs/DAVMAIL-ARCHIVE-SETUP.md)**
 
@@ -28,15 +28,16 @@
 
 因此本项目在本机加一层**兼容 / 翻译桥**：
 
-- **邮箱**：Thunderbird 原生 **IMAP/SMTP** (993/587) — 无需桥接，原 EWS 中继 (`ews_bridge.py:17080`) 已停用，代码保留备用。
-- **日历 / 通讯录**：改用 Thunderbird 原生 **CalDAV / LDAP**，由桥翻译为 EWS。
-- **In-Place Archive（个人存档）**：Thunderbird 经 **DavMail 网关** 以 IMAP 路径前缀 `/archive` 访问。
+- **邮箱**：Thunderbird 原生 **IMAP/SMTP** 经 **DavMail 网关** 代理 (IMAP `127.0.0.1:1143`, SMTP `127.0.0.1:1025`) — DavMail 转换为 EWS。原 EWS 中继 (`ews_bridge.py:17080`) 已停用，代码保留备用。
+- **日历**：Thunderbird 原生 **CalDAV** 经 **DavMail CalDAV** (`127.0.0.1:1080`) — DavMail 转换为 EWS。自研 CalDAV 桥 (`ewscaldav.py:17081`) 已停用。
+- **通讯录**：Thunderbird 原生 **LDAP** 经自研 **ldapgal.py** (`127.0.0.1:17089`) — 转换为 EWS `ResolveNames`。
+- **In-Place Archive（个人存档）**：Thunderbird IMAP 经 **DavMail 网关** (`127.0.0.1:1143)`，IMAP 路径前缀 `/archive`，并经 **davmail-filter** (`127.0.0.1:17143)` 做白名单过滤。
 
 ```
-Thunderbird ──(IMAP/SMTP :993/587)──> mail.example.com:993/587
-Thunderbird ──(原生 CalDAV:17081)──> ewscaldav.py   ──┘
-Thunderbird ──(原生 LDAP  :17089)──> ldapgal.py     ──┘
-Thunderbird ──(IMAP :1143 /archive)──> davmail ──> EWS
+Thunderbird ──(IMAP/SMTP :1143/1025)──> 127.0.0.1 ──> DavMail ──> EWS
+Thunderbird ──(CalDAV :1080)──────────> 127.0.0.1 ──> DavMail ──> EWS
+Thunderbird ──(原生 LDAP :17089)─────> 127.0.0.1 ──> ldapgal.py ──> EWS
+Thunderbird ──(IMAP :17143 /archive)─> 127.0.0.1 ──> davmail-filter ──> DavMail ──> EWS
 ```
 
 核心原则：**TB 侧零插件、只用原生协议；EWS 专有知识与兼容处理收敛在本地桥。**
@@ -45,20 +46,19 @@ Thunderbird ──(IMAP :1143 /archive)──> davmail ──> EWS
 
 | 文件 | 端口 | 说明 |
 |---|---|---|
-| `ewscaldav.py` | 17081 | CalDAV 服务端：PROPFIND / REPORT（multiget、calendar-query）/ GET / PUT / DELETE；EWS `FindItem`+`CalendarView` → ICS；UID↔ItemId/ChangeKey 落 SQLite；写回 `CreateItem`/`UpdateItem`/`DeleteItem` |
+| `ewscaldav.py` | 17081 | **已停用** — CalDAV 服务端保留备用；日历现改用 DavMail CalDAV (`1080`) |
 | `ldapgal.py` | 17089 | 只读 LDAP v3（Bind/Search，BER 最小编解码）：过滤器抽取 → EWS `ResolveNames`（GAL），90s 缓存，单次 ≤50 条 |
-| `check-ews-url.sh` | - | EWS 桥地址守卫：校验/恢复 TB 的 `ews_url` 指向本机桥（配 10min systemd timer） |
-| `tests/` | - | 自测：EWS 联系人/ResolveNames 探测、LDAP Bind+Search smoke test |
-| **DavMail (外部)** | 1143/1025 | IMAP/SMTP 网关到 EWS；在 `/archive` 前缀下暴露 In-Place Archive |
+| `check-ews-url.sh` | - | **已停用** — EWS 桥地址守卫不再使用（EWS 中继已移除） |
+| `tests/` | - | 自测：LDAP Bind+Search smoke test |
+| **DavMail (外部)** | 1143/1025/1080 | IMAP/SMTP/CalDAV 网关到 EWS；在 `/archive` 前缀下暴露 In-Place Archive |
+| **davmail-filter (外部)** | 17143 | IMAP 过滤代理：仅白名单 `/archive/` 文件夹，透明转发至 DavMail |
 
-> **注意**：`ews_bridge.py` (17080) 已停用，代码保留备用。邮件功能已迁移至 IMAP/SMTP 原生协议，详见 [IMAP 迁移指南](docs/MIGRATION-IMAP.md)。
+> **注意**：`ews_bridge.py` (17080) 和 `ewscaldav.py` (17081) 已停用，代码保留备用。邮件功能现经 DavMail IMAP/SMTP (`1143`/`1025)`。详见 [IMAP 迁移指南](docs/MIGRATION-IMAP.md)。
 
 ## 3. 功能现状
 
 ### 3.1 邮件
-TB 以原生 **IMAP (993, SSL/TLS)** 和 **SMTP (587, STARTTLS)** 直连。
-原 EWS 中继 (`ews_bridge.py:17080`) 已停用，代码保留备用。
-IMAP 提供原生 IDLE 推送 + 3 分钟轮询；SMTP 使用 587 端口、STARTTLS 与 `AUTH LOGIN`（明文密码） — 无需 NTLM。
+TB 经 **DavMail** 以 **IMAP (`127.0.0.1:1143)`** 和 **SMTP (`127.0.0.1:1025)`** 通过本地回环连接（无需 TLS）。DavMail 将这些连接转换为 Exchange EWS 调用，比直接 IMAP/SMTP 连到 Exchange 2010 更稳定。
 
 > **⚠️ 重要：Exchange 2010 的 SMTP 587（STARTTLS）经常失效**
 > Exchange 2010 的 SMTP 587（STARTTLS）经常不稳定——连接容易超时、中断或被服务器拒绝。
@@ -70,14 +70,20 @@ IMAP 提供原生 IDLE 推送 + 3 分钟轮询；SMTP 使用 587 端口、STARTT
 > | 字段 | 值 |
 > |---|---|
 > | 服务器 | `127.0.0.1` |
-> | 端口 | `1143` |
+> | 端口 | `1025` |
 > | 连接安全性 | **无**（本地回环，无需加密） |
 > | 认证方式 | 普通密码 |
 > | 用户名 | 完整邮箱 `you@your-company.com` |
 >
-> > **为什么不走端口 25？** 端口 25 常被 ISP/运营商封禁，且是明文传输不加密。通过 DavMail 代理，SMTP 连接走本地回环（`127.0.0.1:1143`），DavMail 再通过 EWS 安全提交到 Exchange，更安全稳定。
+> > **为什么不走端口 25？** 端口 25 常被 ISP/运营商封禁，且是明文传输不加密。通过 DavMail 代理，SMTP 连接走本地回环（`127.0.0.1:1025`)，DavMail 再通过 EWS 安全提交到 Exchange，更安全稳定。
 
 ### 3.2 日历（读 + 写回）
+日历由 **DavMail CalDAV** (`127.0.0.1:1080)` 提供，将 CalDAV 操作翻译为 Exchange EWS。在 Thunderbird 中新建网络日历（CalDAV），URL 为：
+
+`http://127.0.0.1:1080/dav/you@your-company.com/exchange/`
+
+原自研 CalDAV 桥 (`ewscaldav.py:17081)` 已停用。
+
 - **读**：层级发现（principal → calendar-home → calendar）、`calendar-multiget`、
   `calendar-query(time-range)`、单/全量 GET。事件窗口 ±180 天、≤1200 条。
 - **写回**：TB 建/改/删 → `PUT`/`DELETE` → EWS `CreateItem`/`UpdateItem`/`DeleteItem`。
@@ -92,8 +98,21 @@ IMAP 提供原生 IDLE 推送 + 3 分钟轮询；SMTP 使用 587 端口、STARTT
 Exchange 的 `ResolveNames` 是"搜索"而非"枚举"，语义与 LDAP `SearchRequest` 对齐，
 故用 LDAP 而非 CardDAV。过滤器抽取取最长搜索词 → `ResolveNames`。
 
+配置 Thunderbird LDAP 目录：
+
+| 字段 | 值 |
+|---|---|
+| 主机 | `127.0.0.1` |
+| 端口 | `17089` |
+| 基础 DN | `dc=example,dc=com` |
+| 绑定 DN | `you@your-company.com` |
+| 密码 | `********` |
+
+LDAP 桥由自研 **ldapgal.py** (`17089)` 提供。
+
 ### 3.4 In-Place Archive（个人存档 / Online Archive）
 - **访问**：Thunderbird IMAP 账户 → `127.0.0.1:1143` (DavMail) 并设置 **IMAP 服务器目录 = `/archive`**
+- **过滤**：存档专用文件夹经 **davmail-filter** (`127.0.0.1:17143)` 暴露，仅保留 `/archive/` 前缀，其余丢弃
 - **暴露文件夹**：`/archive/收件箱`、`/archive/已发送邮件`、`/archive/草稿`、`/archive/已删除邮件`、业务文件夹等
 - **配置指南**：[docs/DAVMAIL-ARCHIVE-SETUP.md](docs/DAVMAIL-ARCHIVE-SETUP.md)
 
@@ -132,9 +151,10 @@ chmod 600 ~/.config/ews-bridge/cred.json
 ### 4.2 启动服务
 
 ```bash
-python3 ewscaldav.py                  # CalDAV 日历 (17081)
+# CalDAV 日历由 DavMail (1080) 提供 — 无需 ewscaldav.py
 python3 ldapgal.py 17089               # LDAP 通讯录 (17089)
-# ews_bridge.py 已停用 — 邮件走原生 IMAP/SMTP
+# davmail-filter (17143) 以 systemd 用户服务运行
+# ews_bridge.py (17080) 和 ewscaldav.py (17081) 已停用
 ```
 
 systemd 用户单元模板见 `systemd/`。
@@ -142,22 +162,20 @@ systemd 用户单元模板见 `systemd/`。
 ### 4.3 Thunderbird 配置
 
 1. **主邮箱**：新建 **IMAP** 账户
-   - 服务器：`mail.example.com`，端口：`993`，SSL/TLS，普通密码
-   - SMTP：`mail.example.com:587`，STARTTLS，普通密码
+   - 服务器：`127.0.0.1`，端口：`1143`，无加密，普通密码
+   - SMTP：`127.0.0.1:1025`，无加密，普通密码
    - 详细配置见 [IMAP 迁移指南](docs/MIGRATION-IMAP.md)
 
-2. **日历** → 新建日历 → 网络日历（CalDAV），URL：
-   `http://127.0.0.1:17081/dav/you@your-company.com/exchange/`
-
-3. **地址簿** → 新建 → LDAP 目录：Host `127.0.0.1`、Port `17089`、
-   Base DN `dc=example,dc=com`（勾选"写信时在地址簿中查找"）。
-
-4. **个人存档** → 新建 **IMAP** 账户：
-   - 服务器：`127.0.0.1`，端口：`1143`，无加密
+2. **存档（可选，过滤）**：新建 **IMAP** 账户
+   - 服务器：`127.0.0.1`，端口：`17143`，无加密
    - **高级 → IMAP 服务器目录：`/archive`**
-   - SMTP：`127.0.0.1:1025`，无加密
    - 仅订阅 `/archive/...` 文件夹
-   - 完整指南：[docs/DAVMAIL-ARCHIVE-SETUP.md](docs/DAVMAIL-ARCHIVE-SETUP.md)
+
+3. **日历** → 新建日历 → 网络日历（CalDAV），URL：
+   `http://127.0.0.1:1080/dav/you@your-company.com/exchange/`
+
+4. **地址簿** → 新建 → LDAP 目录：Host `127.0.0.1`、Port `17089`、
+   Base DN `dc=example,dc=com`（勾选"写信时在地址簿中查找"）。
 
 5. **写信自动补全** → 设置 → 撰写 → 地址：把 **Directory Server** 从 `None`
    改为该 LDAP 目录（等价：about:config 设
@@ -169,13 +187,12 @@ systemd 用户单元模板见 `systemd/`。
 
 | 服务 | 默认端口 | 配置位置 |
 |---|---|---|
-| 日历 CalDAV (`ewscaldav.py`) | `17081` | `--port N`（默认 `17081`；在 systemd `ExecStart` 里加参数） |
+| 日历 CalDAV (DavMail) | `1080` | `davmail.properties` → `caldavPort` |
 | 通讯录 LDAP (`ldapgal.py`) | `17089` | 命令行参数（`ldapgal.py N`）或 `cred.json` → `ldap_port` |
 | DavMail IMAP/SMTP | `1143`/`1025` | `davmail.properties` → `imapPort`/`smtpPort` |
+| davmail-filter IMAP | `17143` | `davmail_filter.conf` → `listen_port` |
 
-要改端口，需**同步**修改以下几处：
-
-1. 对应的 `systemd/*.service` 的 `ExecStart`：
+已停用：`ewscaldav.py` (17081)、`ews_bridge.py` (17080)、DavMail LDAP (1389)、`check-ews-url.timer`。
    `ewscaldav`/`ldapgal`/DavMail 加参数。
 2. Thunderbird 侧（改 `prefs.js`，或在账户/日历/地址簿对话框里改）：
    - `calendar.registry.<id>.uri` →
