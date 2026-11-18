@@ -244,6 +244,28 @@ user_pref("calendar.registry.<calendar-id>.imip.identity.key", "id2");
 
 ## 7. Add the LDAP address book + compose autocomplete
 
+**Why ldapgal.py (`17089`) instead of DavMail's built-in LDAP (`1389`)?**
+
+DavMail does expose an LDAP port, but it is **not suitable** for Thunderbird's GAL
+autocomplete against Exchange 2010:
+
+- **Bind works, Search returns nothing.** Real tests showed Exchange's
+  `ResolveNames` returned matches (e.g. 9 results for a surname), but DavMail's
+  LDAP layer filtered all of them out (`found 0 results`) before sending entries
+  to the client.
+- **Substring filter is broken.** Thunderbird sends `(cn=*term*)` for compose-time
+  autocomplete. DavMail's LDAP parser concatenates empty substring segments with
+  spaces, turning the value into `"term "` (trailing space), so `startsWith`
+  matching fails and no entries are returned.
+- **Base DN is picky.** DavMail only accepts `ou=people` or `o=od` as the search
+  base; anything else is reported as an unrecognized DN.
+
+The self-built **ldapgal.py** is tailored to Exchange 2010's `ResolveNames`
+semantics and correctly handles Thunderbird's standard substring searches,
+returning results where DavMail's LDAP returns none. For this reason DavMail's
+LDAP port has been set to `0` (disabled) and contacts exclusively use
+`ldapgal.py:17089`.
+
 1. **Address Book → New → LDAP Directory**:
    - Host `127.0.0.1`, Port `17089`, Base DN `dc=example,dc=com`
    - enable "search in address book when composing"

@@ -110,6 +110,15 @@ Exchange 的 `ResolveNames` 是"搜索"而非"枚举"，语义与 LDAP `SearchRe
 
 LDAP 桥由自研 **ldapgal.py** (`17089)` 提供。
 
+**为什么不直接用 DavMail 自带的 LDAP (`1389)`？**
+DavMail 虽然暴露 LDAP 端口，但针对 Thunderbird 与 Exchange 2010 的通讯录自动补全场景，**不适用**：
+
+- **Bind 能成功，Search 却返回 0 条。** 实测显示 Exchange 端的 `ResolveNames` 确实能返回结果（如搜索姓氏返回 9 条），但 DavMail 的 LDAP 层在 `sendPersons` 阶段全部过滤掉了（日志显示 `found 0 results`），最终客户端一条也收不到。
+- **子串过滤器处理有缺陷。** Thunderbird 写信自动补全时发送的是 `(cn=*词*)` 这种子串过滤器。DavMail 的 LDAP 解析器会把空子串段拼成带尾随空格的值（例如 `"词 "`），导致 `startsWith` 匹配失败，结果为空。
+- **基础 DN 很挑剔。** DavMail 只接受 `ou=people` 或 `o=od` 作为搜索基础，其他的（如 `dc=example,dc=com`）都会报 "unrecognized dn"。
+
+因此自研 **ldapgal.py** 针对 Exchange 2010 的 `ResolveNames` 语义做了专门适配，能正确处理 Thunderbird 标准的 `*词*` 子串搜索并正常返回结果，而 DavMail 的 LDAP 返回为零。出于这个原因，DavMail 的 LDAP 端口已设为 `0`（关闭），通讯录全面使用 `ldapgal.py:17089`。
+
 ### 3.4 In-Place Archive（个人存档 / Online Archive）
 - **访问**：Thunderbird IMAP 账户 → `127.0.0.1:1143` (DavMail) 并设置 **IMAP 服务器目录 = `/archive`**
 - **过滤**：存档专用文件夹经 **davmail-filter** (`127.0.0.1:17143)` 暴露，仅保留 `/archive/` 前缀，其余丢弃

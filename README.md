@@ -135,6 +135,28 @@ Configure Thunderbird's LDAP directory as:
 
 The LDAP bridge is provided by the self-built **ldapgal.py** (`17089`).
 
+**Why not use DavMail's built-in LDAP (`1389`) instead?**
+DavMail does expose an LDAP port, but it is **not suitable for Thunderbird's GAL
+autocomplete against Exchange 2010**:
+
+- **Bind works, Search returns nothing.** Real tests showed `ResolveNames` on the
+  Exchange side returned matches (e.g. 9 results for a surname query), but
+  DavMail's LDAP layer filtered all of them out (`found 0 results`) before
+  sending LDAP entries to the client.
+- **Substring filter is broken.** Thunderbird sends `(cn=*term*)` for
+  compose-time autocomplete. DavMail's LDAP parser concatenates empty substring
+  segments with spaces, turning the value into `"term "` (trailing space), so
+  `startsWith` matching fails and no entries are returned.
+- **Base DN is picky.** DavMail only accepts `ou=people` or `o=od` as the search
+  base; anything else (e.g. `dc=example,dc=com`) is reported as an unrecognized
+  DN.
+
+The self-built **ldapgal.py** is tailored to Exchange 2010's `ResolveNames`
+semantics and correctly handles Thunderbird's standard substring searches,
+returning results where DavMail's LDAP returns none. For this reason DavMail's
+LDAP port has been set to `0` (disabled) and contacts exclusively use
+`ldapgal.py:17089`.
+
 ### 3.4 In-Place Archive (个人存档 / Online Archive)
 - **Access**: Thunderbird IMAP account -> `127.0.0.1:1143` (DavMail) with **IMAP server directory = `/archive`**
 - **Filter**: archive-only folders are exposed through **davmail-filter**
